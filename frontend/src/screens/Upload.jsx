@@ -1,8 +1,14 @@
-import { useState } from 'react'
-import { createSession, uploadDocs, uploadQuestionnaire, processQuestionnaire } from '../api'
+import { useState, useEffect } from 'react'
+import { getProviders, createSession, uploadDocs, uploadQuestionnaire, processQuestionnaire } from '../api'
 
 const DOC_TYPE_LABELS = {
   '.pdf': 'PDF',
+}
+
+const PROVIDER_LABELS = {
+  anthropic: 'Anthropic',
+  groq: 'Groq',
+  google: 'Google',
 }
 
 export default function Upload({ onStart }) {
@@ -13,6 +19,20 @@ export default function Upload({ onStart }) {
   const [error, setError] = useState(null)
   const [dragOverDocs, setDragOverDocs] = useState(false)
   const [dragOverQ, setDragOverQ] = useState(false)
+  const [providers, setProviders] = useState([])
+  const [selectedProvider, setSelectedProvider] = useState(null)
+
+  useEffect(() => {
+    getProviders()
+      .then(({ providers }) => {
+        setProviders(providers)
+        const def = providers.find((p) => p.default) || providers[0]
+        if (def) setSelectedProvider(def.id)
+      })
+      .catch(() => {
+        // backend not running yet — silently ignore
+      })
+  }, [])
 
   function addComplianceDocs(files) {
     const pdfs = Array.from(files).filter(
@@ -42,7 +62,7 @@ export default function Upload({ onStart }) {
     setError(null)
 
     try {
-      const { session_id } = await createSession()
+      const { session_id } = await createSession(selectedProvider)
       await uploadDocs(session_id, complianceDocs)
       await uploadQuestionnaire(session_id, qFile, qText.trim() || null)
       await processQuestionnaire(session_id)
@@ -61,6 +81,42 @@ export default function Upload({ onStart }) {
           Upload your compliance docs and the prospect's questionnaire. AI will draft every answer.
         </p>
       </div>
+
+      {providers.length > 0 && (
+        <div className="mb-6 flex items-center gap-3">
+          <span className="text-sm font-medium text-slate-600 whitespace-nowrap">AI model:</span>
+          <div className="flex gap-2 flex-wrap">
+            {providers.map((p) => {
+              const isSelected = selectedProvider === p.id
+              const isUnconfigured = !p.configured
+              return (
+                <button
+                  key={p.id}
+                  onClick={() => !isUnconfigured && setSelectedProvider(p.id)}
+                  title={isUnconfigured ? `${p.id.toUpperCase()}_API_KEY not set in .env` : p.model}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${
+                    isSelected
+                      ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
+                      : isUnconfigured
+                      ? 'border-slate-200 text-slate-300 cursor-not-allowed bg-white'
+                      : 'border-slate-300 text-slate-600 bg-white hover:border-blue-400 hover:text-blue-600'
+                  }`}
+                >
+                  {PROVIDER_LABELS[p.id] ?? p.id}
+                  {isUnconfigured && (
+                    <span className="ml-1.5 text-xs font-normal opacity-60">no key</span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+          {selectedProvider && (
+            <span className="text-xs text-slate-400 hidden sm:block">
+              {providers.find((p) => p.id === selectedProvider)?.model}
+            </span>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Left: Compliance Docs */}

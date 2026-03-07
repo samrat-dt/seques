@@ -1,9 +1,10 @@
+from __future__ import annotations
+
 import json
-import os
 import re
 from typing import List
 
-import anthropic
+from llm import chat
 
 from models import (
     Answer,
@@ -35,15 +36,6 @@ NEEDS_REVIEW_KEYWORDS = [
 ]
 
 
-def get_client() -> anthropic.Anthropic:
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ValueError(
-            "ANTHROPIC_API_KEY not set. Copy backend/.env.example to backend/.env and add your key."
-        )
-    return anthropic.Anthropic(api_key=api_key)
-
-
 def build_doc_context(docs: List[ComplianceDoc]) -> str:
     parts = []
     for doc in docs:
@@ -70,8 +62,7 @@ def check_needs_review(question: Question, data: dict) -> bool:
     return False
 
 
-def answer_question(question: Question, docs: List[ComplianceDoc]) -> Answer:
-    client = get_client()
+def answer_question(question: Question, docs: List[ComplianceDoc], provider: str | None = None) -> Answer:
     doc_context = build_doc_context(docs)
 
     prompt = f"""You are a security compliance expert helping a vendor respond to a prospect's security questionnaire.
@@ -109,14 +100,12 @@ certainty rules:
 - 50-69: evidence is vague or only tangentially relevant
 - below 50: very uncertain or no evidence"""
 
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1024,
+    content = chat(
         system="You are a security compliance expert. Return only valid JSON — no markdown fences, no preamble.",
-        messages=[{"role": "user", "content": prompt}],
+        user=prompt,
+        max_tokens=1024,
+        provider=provider,
     )
-
-    content = response.content[0].text.strip()
 
     # Strip markdown code fences if present
     if "```" in content:

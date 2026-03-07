@@ -1,6 +1,8 @@
 fastapi
 uvicorn[standard]
 anthropic
+openai
+google-generativeai
 PyMuPDF
 pandas
 openpyxl
@@ -8,3 +10,5 @@ python-multipart
 reportlab
 python-dotenv
 numpy
+mixpanel
+supabase

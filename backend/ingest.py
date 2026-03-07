@@ -8,7 +8,7 @@ def extract_pdf_text(filepath: str) -> tuple[str, int]:
     for page in doc:
         pages.append(page.get_text())
     doc.close()
-    return "\n\n".join(pages), len(doc)
+    return "\n\n".join(pages), len(pages)
 
 
 def detect_doc_type(filename: str) -> tuple[DocType, TrustLevel]:

@@ -1,32 +1,20 @@
+from __future__ import annotations
+
 import json
-import os
 import re
 from typing import List
 
 import fitz  # PyMuPDF
 import pandas as pd
-import anthropic
+
+from llm import chat
 
 from models import AnswerFormat, Question
 
 
-def get_client() -> anthropic.Anthropic:
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY not set. Copy backend/.env.example to backend/.env and add your key.")
-    return anthropic.Anthropic(api_key=api_key)
-
-
-def extract_questions_with_claude(text: str) -> List[Question]:
-    client = get_client()
-
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
-        messages=[
-            {
-                "role": "user",
-                "content": f"""Extract all questions from this security questionnaire text.
+def extract_questions_with_claude(text: str, provider: str | None = None) -> List[Question]:
+    system = "You are a security questionnaire parser. Return only valid JSON — no markdown fences, no preamble."
+    user = f"""Extract all questions from this security questionnaire text.
 
 Return a JSON array only — no markdown, no explanation, just the array.
 
@@ -45,12 +33,9 @@ Rules for answer_format:
 TEXT:
 {text[:10000]}
 
-Return ONLY a valid JSON array. Start your response with [ and end with ].""",
-            }
-        ],
-    )
+Return ONLY a valid JSON array. Start your response with [ and end with ]."""
 
-    content = response.content[0].text.strip()
+    content = chat(system=system, user=user, max_tokens=4096, provider=provider)
 
     # Strip markdown code fences if present
     if "```" in content:
@@ -88,11 +73,11 @@ Return ONLY a valid JSON array. Start your response with [ and end with ].""",
     return questions
 
 
-def parse_pdf_questionnaire(filepath: str) -> List[Question]:
+def parse_pdf_questionnaire(filepath: str, provider: str | None = None) -> List[Question]:
     doc = fitz.open(filepath)
     text = "\n\n".join(page.get_text() for page in doc)
     doc.close()
-    return extract_questions_with_claude(text)
+    return extract_questions_with_claude(text, provider=provider)
 
 
 def parse_excel_questionnaire(filepath: str) -> List[Question]:
@@ -130,5 +115,5 @@ def parse_excel_questionnaire(filepath: str) -> List[Question]:
     return questions
 
 
-def parse_text_questionnaire(text: str) -> List[Question]:
-    return extract_questions_with_claude(text)
+def parse_text_questionnaire(text: str, provider: str | None = None) -> List[Question]:
+    return extract_questions_with_claude(text, provider=provider)

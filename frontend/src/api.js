@@ -13,8 +13,16 @@ async function request(path, options = {}) {
   return res.json()
 }
 
-export async function createSession() {
-  return request('/api/sessions', { method: 'POST' })
+export async function getProviders() {
+  return request('/api/providers')
+}
+
+export async function createSession(provider) {
+  return request('/api/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider }),
+  })
 }
 
 export async function uploadDocs(sessionId, files) {
