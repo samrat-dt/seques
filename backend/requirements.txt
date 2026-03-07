@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+anthropic
+PyMuPDF
+pandas
+openpyxl
+python-multipart
+reportlab
+python-dotenv
+numpy
