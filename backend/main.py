@@ -102,7 +102,11 @@ class Session:
 
 sessions: Dict[str, Session] = {}
 
-ANSWER_CONCURRENCY = int(os.getenv("ANSWER_CONCURRENCY", "10"))
+_CONCURRENCY_RAW = int(os.getenv("ANSWER_CONCURRENCY", "10"))
+ANSWER_CONCURRENCY = min(_CONCURRENCY_RAW, 20)
+if _CONCURRENCY_RAW > 20:
+    import warnings
+    warnings.warn(f"ANSWER_CONCURRENCY={_CONCURRENCY_RAW} exceeds max of 20; clamped to 20.")
 
 # Dedicated executor for fire-and-forget DB saves — lives outside answer engine
 # so its shutdown doesn't block session.processing = False
@@ -437,6 +441,8 @@ async def process_questionnaire(
             status_code=400,
             detail=f"{required_key} not configured for provider '{session.provider}'. Set it in backend/.env.",
         )
+    if session.processing:
+        raise HTTPException(status_code=409, detail="Session is already being processed. Wait for it to complete.")
     if not session.docs:
         raise HTTPException(status_code=400, detail="No compliance docs uploaded")
     if not session.questions:
@@ -481,7 +487,13 @@ def run_answer_engine(session_id: str):
                     session.answers[question.id] = answer
                     if answer.needs_review:
                         needs_review_count += 1
-                    _db_save_executor.submit(database.save_answer, session_id, answer)
+                    def _on_save_done(fut, qid=question.id):
+                        exc = fut.exception()
+                        if exc:
+                            logger.error("db_save_failed", extra={
+                                "session_id": session_id, "question_id": qid, "error": str(exc)
+                            })
+                    _db_save_executor.submit(database.save_answer, session_id, answer).add_done_callback(_on_save_done)
                 except Exception as e:
                     error_count += 1
                     logger.error("answer_generation_failed", extra={
