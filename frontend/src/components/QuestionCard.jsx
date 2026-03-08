@@ -1,22 +1,25 @@
 import { useState } from 'react'
 
 const COVERAGE = {
-  covered: {
-    emoji: '🟢',
-    label: 'Covered',
-    pill: 'bg-green-50 text-green-700 border-green-200',
-  },
-  partial: {
-    emoji: '🟡',
-    label: 'Partial',
-    pill: 'bg-amber-50 text-amber-700 border-amber-200',
-  },
-  none: {
-    emoji: '🔴',
-    label: 'No Evidence',
-    pill: 'bg-red-50 text-red-700 border-red-200',
-  },
+  covered: { dot: 'bg-success-text', text: 'text-success-text', bg: 'bg-success-bg', border: 'border-success-border', label: 'Covered' },
+  partial:  { dot: 'bg-warning-text', text: 'text-warning-text', bg: 'bg-warning-bg', border: 'border-warning-border', label: 'Partial' },
+  none:     { dot: 'bg-danger-text',  text: 'text-danger-text',  bg: 'bg-danger-bg',  border: 'border-danger-border',  label: 'No evidence' },
 }
+
+const FileSmIcon = () => (
+  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+    <polyline points="14 2 14 8 20 8" />
+  </svg>
+)
+
+const BulbIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="9" y1="18" x2="15" y2="18" />
+    <line x1="10" y1="22" x2="14" y2="22" />
+    <path d="M12 2a7 7 0 0 1 7 7c0 2.5-1.5 4.5-3 6l-1 2H9l-1-2C6.5 13.5 5 11.5 5 9a7 7 0 0 1 7-7z" />
+  </svg>
+)
 
 export default function QuestionCard({ question, answer, onUpdate }) {
   const [editing, setEditing] = useState(false)
@@ -29,19 +32,19 @@ export default function QuestionCard({ question, answer, onUpdate }) {
 
   const certaintyColor =
     answer.ai_certainty > 80
-      ? 'text-green-600'
+      ? 'text-success-text'
       : answer.ai_certainty > 50
-      ? 'text-amber-600'
-      : 'text-red-600'
+      ? 'text-warning-text'
+      : 'text-danger-text'
 
-  const borderColor =
+  const borderAccent =
     answer.status === 'approved'
-      ? 'border-l-green-500'
+      ? 'border-l-success-text'
       : answer.status === 'edited'
-      ? 'border-l-blue-500'
+      ? 'border-l-info-text'
       : answer.needs_review
-      ? 'border-l-amber-400'
-      : 'border-l-slate-200'
+      ? 'border-l-warning-text'
+      : 'border-l-mid'
 
   async function handleSave() {
     setSaving(true)
@@ -55,26 +58,28 @@ export default function QuestionCard({ question, answer, onUpdate }) {
   }
 
   return (
-    <div className={`bg-white rounded-xl shadow-sm border border-slate-100 border-l-4 ${borderColor} p-6`}>
-      {/* Header row */}
-      <div className="flex items-start justify-between mb-3 gap-3">
+    <div
+      className={`bg-surface rounded-xl border border-subtle border-l-3 ${borderAccent} p-5 transition-all hover:border-mid hover:shadow-card-hover group`}
+    >
+      {/* Row 1: header */}
+      <div className="flex items-start justify-between mb-2 gap-3">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="font-mono text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded">
+          <span className="font-mono text-[10px] bg-raised text-muted px-2 py-0.5 rounded tracking-wide">
             {question.id.toUpperCase()}
           </span>
-          {answer.needs_review && answer.status !== 'approved' && (
-            <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded font-medium">
-              ⚠ REVIEW
-            </span>
-          )}
           {answer.status === 'approved' && (
-            <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded font-medium">
-              ✅ APPROVED
+            <span className="font-mono text-[10px] tracking-wide font-semibold px-2 py-0.5 rounded bg-success-bg text-success-text border border-success-border">
+              APPROVED
             </span>
           )}
-          {answer.status === 'edited' && (
-            <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-medium">
+          {answer.status === 'edited' && answer.status !== 'approved' && (
+            <span className="font-mono text-[10px] tracking-wide font-semibold px-2 py-0.5 rounded bg-info-bg text-info-text border border-info-border">
               EDITED
+            </span>
+          )}
+          {answer.needs_review && answer.status !== 'approved' && (
+            <span className="font-mono text-[10px] tracking-wide font-semibold px-2 py-0.5 rounded bg-warning-bg text-warning-text border border-warning-border">
+              REVIEW
             </span>
           )}
         </div>
@@ -82,11 +87,8 @@ export default function QuestionCard({ question, answer, onUpdate }) {
         <div className="flex items-center gap-2 flex-shrink-0">
           {!editing && (
             <button
-              onClick={() => {
-                setDraftText(answer.draft_answer)
-                setEditing(true)
-              }}
-              className="text-xs text-slate-500 hover:text-blue-600 border border-slate-200 hover:border-blue-300 px-3 py-1 rounded-lg transition"
+              onClick={() => { setDraftText(answer.draft_answer); setEditing(true) }}
+              className="text-xs text-muted hover:text-primary px-3 py-1 rounded-lg hover:bg-raised transition-all"
             >
               Edit
             </button>
@@ -94,22 +96,22 @@ export default function QuestionCard({ question, answer, onUpdate }) {
           {answer.status !== 'approved' && !editing && (
             <button
               onClick={handleApprove}
-              className="text-xs text-white bg-green-600 hover:bg-green-700 px-3 py-1 rounded-lg transition"
+              className="text-xs font-medium text-secondary hover:text-primary bg-raised hover:bg-overlay border border-mid hover:border-strong px-3 py-1 rounded-lg transition-all"
             >
-              ✅ Approve
+              Approve
             </button>
           )}
         </div>
       </div>
 
-      {/* Question text */}
-      <p className="text-slate-900 font-medium mb-3 leading-relaxed">{question.text}</p>
+      {/* Row 2: question */}
+      <p className="text-sm text-primary font-medium leading-relaxed mt-2 mb-3">{question.text}</p>
 
-      {/* Answer */}
+      {/* Row 3: answer */}
       {editing ? (
         <div className="mb-3">
           <textarea
-            className="w-full border border-blue-300 rounded-lg p-3 text-sm text-slate-700 resize-none focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+            className="w-full bg-raised border border-amber-400/40 rounded-md p-4 text-sm text-primary resize-none focus:outline-none focus:ring-2 focus:ring-amber-400/25 focus:border-amber-400/60 transition-all"
             rows={5}
             value={draftText}
             onChange={(e) => setDraftText(e.target.value)}
@@ -119,61 +121,71 @@ export default function QuestionCard({ question, answer, onUpdate }) {
             <button
               onClick={handleSave}
               disabled={saving}
-              className="text-xs bg-blue-600 text-white px-4 py-1.5 rounded-lg hover:bg-blue-700 disabled:opacity-60 transition"
+              className="text-xs font-medium bg-accent text-base px-4 py-1.5 rounded-lg hover:bg-amber-300 disabled:opacity-60 transition-all shadow-btn-primary"
             >
               {saving ? 'Saving...' : 'Save'}
             </button>
             <button
               onClick={() => setEditing(false)}
-              className="text-xs text-slate-500 px-4 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 transition"
+              className="text-xs text-muted px-4 py-1.5 rounded-lg hover:bg-raised hover:text-primary transition-all"
             >
               Cancel
             </button>
           </div>
         </div>
       ) : (
-        <div className="bg-slate-50 rounded-lg p-4 mb-3 text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
+        <div className="bg-raised rounded-md p-4 mb-3 text-sm text-secondary leading-relaxed whitespace-pre-wrap border-t-2 border-amber-400/20">
           {answer.draft_answer}
         </div>
       )}
 
-      {/* Evidence sources */}
-      {answer.evidence_sources?.length > 0 && (
-        <div className="flex items-center gap-1.5 flex-wrap text-xs text-slate-500 mb-3">
-          <span>📄</span>
-          {answer.evidence_sources.map((s, i) => (
-            <span key={i} className="bg-slate-100 px-2 py-0.5 rounded">
-              {s}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {/* Scores */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <span
-          className={`text-xs px-2.5 py-1 rounded-full border font-medium ${coverage.pill}`}
-        >
-          {coverage.emoji} {coverage.label}
-        </span>
-        <span className={`text-xs font-medium ${certaintyColor}`}>
-          Certainty {answer.ai_certainty}%
-        </span>
-        {answer.coverage_reason && (
-          <span className="text-xs text-slate-400 italic">{answer.coverage_reason}</span>
+      {/* Row 4: metadata footer */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {/* Evidence sources */}
+        {answer.evidence_sources?.length > 0 && (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {answer.evidence_sources.map((s, i) => (
+              <span
+                key={i}
+                className="flex items-center gap-1 bg-overlay border border-subtle text-muted text-[10px] px-2 py-0.5 rounded font-mono"
+              >
+                <FileSmIcon />
+                {s}
+              </span>
+            ))}
+          </div>
         )}
+
+        {/* Coverage + certainty — pushed right */}
+        <div className="flex items-center gap-3 ml-auto">
+          <span
+            className={`flex items-center gap-1.5 text-xs px-2 py-0.5 rounded border ${coverage.bg} ${coverage.text} ${coverage.border}`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full inline-block ${coverage.dot}`} />
+            {coverage.label}
+          </span>
+          <span className={`font-mono text-xs ${certaintyColor}`}>
+            {answer.ai_certainty}%
+          </span>
+        </div>
       </div>
 
-      {/* Suggested addition */}
+      {/* Coverage reason */}
+      {answer.coverage_reason && (
+        <p className="text-[10px] text-muted italic mt-1.5">{answer.coverage_reason}</p>
+      )}
+
+      {/* Row 5: suggested addition */}
       {answer.suggested_addition && (
-        <div className="mt-3 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 text-xs text-blue-700">
-          💡 {answer.suggested_addition}
+        <div className="mt-3 bg-info-bg border border-info-border/50 rounded-md px-3 py-2 flex items-start gap-2">
+          <span className="text-info-text mt-0.5 flex-shrink-0"><BulbIcon /></span>
+          <p className="text-xs text-info-text">{answer.suggested_addition}</p>
         </div>
       )}
 
-      {/* Certainty reason (when low) */}
+      {/* Certainty reason */}
       {answer.certainty_reason && (
-        <div className="mt-2 text-xs text-slate-400 italic">{answer.certainty_reason}</div>
+        <p className="text-[10px] text-muted italic mt-2">{answer.certainty_reason}</p>
       )}
     </div>
   )
