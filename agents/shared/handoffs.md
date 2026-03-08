@@ -8,3 +8,4 @@
 | 2026-03-08 | orchestrator | infra | Supabase integration | ✅ Code done — migration SQL needs running in dashboard |
 | 2026-03-08 | orchestrator | security | CORS wildcard opened for dev | ⚠️ Temporary — restrict before prod |
 | 2026-03-08 | orchestrator | github | Agent created | 🔲 CI/CD setup pending |
+| 2026-03-08 | github+infra | CI/CD setup | ✅ GitHub Actions, Dependabot, PR template, issue templates |

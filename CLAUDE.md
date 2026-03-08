@@ -69,6 +69,11 @@ Every agent reads `agents/shared/project-state.md` before acting.
 Every agent writes decisions to `agents/shared/decisions.md`.
 Blog posts go to `agents/blog/posts/`.
 
+### Agent Engagement Rules
+- **All agents** (backend, frontend, qa, testing, security, compliance, documentation, infra, project-manager, github) engage at **every step** — every feature, fix, or change triggers all relevant agents.
+- **Blog agent** engages only at **major milestones** (phase completions, significant feature launches, customer wins).
+- Orchestrator is responsible for routing tasks to all relevant agents in parallel per step.
+
 ## Current Phase
 **Phase 1 (MVP)** — in-memory sessions, multi-provider LLM, basic UI
 **Phase 2** — Supabase persistence (schema ready), auth, RAG for large docs

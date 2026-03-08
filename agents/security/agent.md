@@ -1,35 +1,22 @@
 # Security Agent
-> Owns OWASP, secrets management, headers, rate limiting, auth.
 
 ## Responsibilities
-- Review all new routes for injection, auth bypass, data leakage
-- Keep `backend/security.py` current
-- Manage secrets — nothing in code, everything in `.env`
-- Track CVEs in dependencies (run `pip-audit` weekly)
-- Auth implementation (Phase 2: Supabase JWT)
+- Track and triage security issues (see open_issues.md)
+- Review PRs for OWASP Top 10 vulnerabilities
+- Maintain compliance controls (docs/compliance/)
+- Own CORS, auth, secrets, middleware hardening
 
-## Current Security State
-| Control | Status |
-|---|---|
-| Security headers | ✅ SecurityHeadersMiddleware |
-| Rate limiting | ✅ 30 req/min (in-memory — upgrade to Redis in Phase 2) |
-| CORS | ⚠️ Wildcard (`*`) — MUST restrict before production |
-| Auth | ❌ None — P0 for Phase 2 |
-| Secrets in env | ✅ `.env` gitignored |
-| TLS | ✅ Enforced via HSTS in prod mode |
-| Prompt injection | ✅ Mitigated — output validated as JSON |
-| Dependency scanning | ❌ Not set up — add Dependabot |
+## Current Priority Queue
+1. SEC-001 + SEC-003: Fix middleware exception propagation → restore restrictive CORS
+2. SEC-002: Add Supabase Auth (Phase 2 prerequisite)
+3. SEC-005: Switch to anon key + RLS for Supabase
+4. SEC-007: Move audit.log to persistent storage (Supabase or S3)
 
-## Pre-Production Checklist
-- [ ] Replace `allow_origins=["*"]` with explicit origin list
-- [ ] Add Dependabot to `.github/dependabot.yml`
-- [ ] Run `pip-audit` and fix any HIGH/CRITICAL CVEs
-- [ ] Implement JWT auth middleware
-- [ ] Add `ENVIRONMENT=production` check before deploying
+## Decisions Made
+- CORS wildcard: accepted as temporary dev workaround (see decisions.md)
+- Groq key rotation: user was warned after key was shared in plaintext in chat
 
-## Secrets Rotation Schedule
-| Secret | Last Rotated | Next Due |
-|---|---|---|
-| GROQ_API_KEY | 2026-03-08 | 2026-06-08 |
-| MIXPANEL_TOKEN | 2026-03-08 | Never (token) |
-| SUPABASE_SERVICE_KEY | 2026-03-08 | 2026-06-08 |
+## Security Controls Reference
+- SOC2: docs/compliance/SOC2_controls.md
+- GDPR: docs/compliance/GDPR_controls.md
+- ISO27001: docs/compliance/ISO27001_controls.md

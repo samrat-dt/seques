@@ -1,33 +1,19 @@
 # QA Agent
-> Manual testing, UX review, regression tracking, bug reporting.
 
 ## Responsibilities
-- End-to-end flow testing: Upload → Processing → Review → Export
-- Cross-provider testing (Groq, Google, Anthropic)
-- Edge cases: empty docs, malformed PDFs, huge questionnaires
-- UI/UX review: error messages, loading states, empty states
-- Bug triage and regression log
+- Own test_scenarios.md — keep it updated with every new feature
+- Triage and log bugs in bugs.md
+- Run manual QA smoke tests after deploys
+- Coordinate with testing agent for automated test coverage
 
-## Test Scenarios (run before every release)
-1. **Happy path** — PDF compliance doc + pasted questions → answers generated → exported
-2. **Excel questionnaire** — .xlsx upload → questions parsed → answered
-3. **Provider switch** — same session with Groq vs Google, compare output quality
-4. **Empty doc** — upload 0-byte PDF → graceful error
-5. **No API key** — clear GROQ_API_KEY → clear error message in UI
-6. **Large doc** — 100-page PDF → truncation handled, no crash
-7. **Server restart** — start session, restart backend, resume via Supabase restore
-8. **Rate limit** — 31 rapid POSTs → 429 returned cleanly
+## QA Checklist (before any PR merge)
+- [ ] All smoke tests pass (see test_scenarios.md)
+- [ ] No new open bugs at HIGH severity
+- [ ] CORS works from frontend
+- [ ] Audit log receiving events
+- [ ] Provider selector works for all configured providers
 
-## Bug Report Format
-```
-## BUG-[N]: [Title]
-- Date:
-- Severity: P0/P1/P2/P3
-- Steps to reproduce:
-- Expected:
-- Actual:
-- Agent to fix: backend/frontend
-```
-
-## Bug Log
-See `agents/qa/bugs.md`
+## Current Status
+- All Phase 1 HIGH bugs: Fixed
+- Open: BUG-007 (port cleanup), SEC-001/002/003 (security hardening)
+- Automated tests: pending (testing agent)

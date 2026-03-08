@@ -14,7 +14,7 @@ Updated by: Orchestrator
 | Auth | ❌ Not started | backend |
 | RAG | ❌ Phase 2 | backend |
 | Tests | ❌ Not started | testing |
-| CI/CD | ❌ Not started | infra |
+| CI/CD | ✅ Set up | infra |
 | DPAs | ❌ Not signed | compliance |
 | Privacy notice | ❌ Not written | compliance |
 
