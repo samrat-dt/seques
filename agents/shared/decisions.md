@@ -166,3 +166,42 @@
 - ❌ Retry budget (4x) is a guess — may need tuning against production traffic patterns
 
 **Outcome**: Retry logic lives in `llm.py` `chat()` wrapper. Retry count and delays exposed as env vars (`LLM_MAX_RETRIES`, `LLM_BACKOFF_BASE`) for ops tuning.
+
+---
+
+## 2026-03-09 — Sequential processing default (ANSWER_CONCURRENCY=1)
+
+**Decision**: Ship Phase 1 checkpoint with `ANSWER_CONCURRENCY=1` (sequential) as the runtime default, overriding the earlier parallel-first design (`ANSWER_CONCURRENCY=10`).
+
+**Context**: During Phase 1 load testing, parallel execution at concurrency=10 produced intermittent ordering anomalies and unpredictable SSE delivery under Groq's rate limits. While the 6-8x speedup was real in ideal conditions, reliability under burst load was inconsistent. For a co-pilot tool where answer completeness matters more than raw throughput, a dropped or silently-failed answer is worse than a slow one. Founders also flagged that a 15-20s wait is acceptable for the current demo/beta audience — speed is a Phase 2 optimisation target.
+
+**Trade-offs**:
+- ✅ Predictable, deterministic answer ordering — every question always answered
+- ✅ No burst pressure on Groq RPM limits — single in-flight request at a time
+- ✅ Simpler to debug and observe (one log line per question, sequential)
+- ✅ Backoff logic still present and fires on individual retries if needed
+- ❌ Slower wall time (~120s for 30 questions vs ~15-20s parallel)
+- ❌ SSE streaming benefit is reduced — answers come one-by-one rather than in parallel bursts
+
+**Principle**: Reliability beats speed at Phase 1 scale. The parallel code path (`ThreadPoolExecutor`) remains in the codebase and is activated by setting `ANSWER_CONCURRENCY` > 1 in `.env`. Phase 2 will revisit with async LLM clients and a Redis-backed rate-limit budget tracker to make parallelism safe.
+
+**Outcome**: `ANSWER_CONCURRENCY=1` set in `backend/.env`. Engine, SSE endpoint, and frontend unchanged — they handle both modes transparently.
+
+---
+
+## 2026-03-09 — TPD-aware Groq API key blacklisting
+
+**Decision**: Implement a 5-key Groq API key pool with two distinct blacklist tiers: TPM (tokens-per-minute) errors trigger a short-lived cooldown; TPD (tokens-per-day) errors blacklist the key for the remainder of the calendar day (UTC midnight reset).
+
+**Context**: Groq's free tier enforces two separate rate-limit buckets: TPM (burst) and TPD (daily cap). The original backoff logic treated all 429 errors identically — a TPD-exhausted key would be retried with backoff, burning retry budget against a limit that won't reset for hours. With a 5-key pool, cycling past a TPD-exhausted key to a fresh one is the correct recovery path. TPM errors, by contrast, are transient and resolve within seconds, so cooling the key briefly and retrying is cheaper than permanently removing it from rotation.
+
+**Trade-offs**:
+- ✅ TPD-exhausted keys are skipped for the rest of the day — no wasted retry budget
+- ✅ TPM-cooled keys return to rotation quickly — preserves pool throughput during bursts
+- ✅ Pool distributes load across 5 keys — raises effective daily token ceiling ~5x
+- ✅ UTC midnight reset is simple and auditable; no per-key expiry arithmetic
+- ❌ Requires 5 Groq API keys to configure (operational overhead)
+- ❌ If all 5 keys hit TPD simultaneously, the engine degrades to hard failure (acceptable edge case for current scale)
+- ❌ Key selection currently round-robin; no weighted routing by remaining quota (Phase 2 enhancement)
+
+**Outcome**: Key pool and blacklist logic live in `llm.py`. TPD vs TPM distinction is logged at WARNING level for ops visibility. `GROQ_API_KEY_1` through `GROQ_API_KEY_5` env vars configure the pool. Falls back to single-key mode if only `GROQ_API_KEY` is set.

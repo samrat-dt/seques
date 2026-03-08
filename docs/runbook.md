@@ -191,6 +191,85 @@ Use the SSE stream when you want answers to appear incrementally (e.g., in the R
 
 ---
 
+## Phase 1 Checkpoint (2026-03-09)
+
+### Current Environment Variable Settings
+
+These are the conservative defaults tuned for Groq's **free-tier TPD (Tokens Per Day)** limits across 5 keys. Do not increase them until you are on a paid Groq plan.
+
+| Variable | Current Value | Purpose |
+|---|---|---|
+| `ANSWER_CONCURRENCY` | `1` | One question answered at a time — prevents TPD exhaustion |
+| `QUESTION_DELAY_S` | `1.5` | Seconds to sleep between questions — paces token consumption |
+| `DOC_CHAR_BUDGET` | `32000` | Max characters of compliance docs injected per prompt |
+| `GROQ_API_KEY_1` … `GROQ_API_KEY_5` | set | Five Groq keys; engine round-robins to spread daily token usage |
+
+To confirm current values at runtime:
+```bash
+grep -E 'ANSWER_CONCURRENCY|QUESTION_DELAY_S|DOC_CHAR_BUDGET|GROQ_API_KEY' backend/.env
+```
+
+---
+
+### Scaling Up (Paid Groq Tier)
+
+Once you have a paid Groq subscription with raised rate limits, update `backend/.env`:
+
+```
+ANSWER_CONCURRENCY=5
+QUESTION_DELAY_S=0
+DOC_CHAR_BUDGET=96000
+```
+
+Then restart uvicorn. These settings:
+- Process 5 questions in parallel (3–5x throughput)
+- Remove the inter-question sleep entirely
+- Feed ~3x more compliance document context per prompt (better answer quality)
+
+You can reduce `GROQ_API_KEY_2` … `GROQ_API_KEY_5` back to a single key once you are on a paid plan with a high enough per-minute limit.
+
+---
+
+### TPD Exhaustion — Symptoms and Recovery
+
+**Symptoms** (any of the following indicate TPD exhaustion):
+
+- `audit.log` shows `"outcome": "failure"` on `processing.answer_generated` events
+- Answers come back with generic text ("I don't have information…") rather than doc-backed content
+- Groq API returns HTTP 429 with `"error": "rate_limit_exceeded"` and a reset time of `> 60s` (daily reset, not per-minute)
+- Processing stalls mid-session with no stream events
+
+**Immediate recovery steps**:
+
+1. Stop processing — `Ctrl-C` uvicorn if needed (in-memory sessions will be lost).
+2. Check which key is exhausted:
+   ```bash
+   grep '"outcome": "failure"' backend/audit.log | tail -20 | jq .
+   ```
+3. Keys reset at **midnight UTC**. If exhaustion happened late in the day, wait for midnight reset before resuming.
+4. Restart uvicorn — the key rotation counter resets and the engine will start with key 1 again:
+   ```bash
+   cd backend && .venv/bin/uvicorn main:app --reload --port 8000
+   ```
+5. Re-upload the questionnaire and reprocess the session (Phase 1 is in-memory; no persistence across restarts).
+6. If you cannot wait for midnight, rotate in a fresh Groq key: add it as `GROQ_API_KEY_6` in `.env` and restart.
+
+**Prevention**: Keep `ANSWER_CONCURRENCY=1` and `QUESTION_DELAY_S=1.5` until on a paid tier. Monitor remaining daily tokens in the Groq console.
+
+---
+
+### Branch Protection Rules (main)
+
+Confirmed active as of 2026-03-09:
+
+- **Pull request required** — at least 1 approving review before merge; direct pushes to `main` are blocked.
+- **No force push** — `git push --force` to `main` is rejected by GitHub.
+- **No branch deletion** — `main` cannot be deleted via the API or UI.
+
+To verify or update these rules: GitHub → repo Settings → Branches → Branch protection rules → `main`.
+
+---
+
 ## Updating Dependencies
 
 ```bash

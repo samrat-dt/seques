@@ -220,6 +220,93 @@
 
 ---
 
+---
+
+## Checkpoint Sign-off — 2026-03-09
+> Branch: feat/backend-improvements
+> Reviewer: QA Agent (code-verified)
+> Known working configuration: ANSWER_CONCURRENCY=1, QUESTION_DELAY_S=1.5, 5-key Groq pool, TPD blacklisting active
+
+### Summary
+
+| Status | Count | Scenarios |
+|---|---|---|
+| PASSED | 18 | S1–S10, E1, E3, E5, P1, P2, P4, P6, P7 |
+| REQUIRES_LIVE_TEST | 11 | E2, E4, E6, E7, P3, P5, D1–D4, and all Provider Scenarios |
+| BLOCKED | 1 | ANSWER_CONCURRENCY=0 edge case (P4 sub-item) |
+
+---
+
+### PASSED — Verified by code inspection
+
+These scenarios are confirmed correct by reading `backend/main.py`, `backend/llm.py`, and `backend/engine.py`. No live key required.
+
+| Scenario | Verification basis |
+|---|---|
+| **S1** Health check | `GET /health` returns `{"status":"ok","version":...}` — implemented, no dependencies. |
+| **S2** Provider list | `GET /api/providers` iterates `PROVIDER_KEYS`, checks `os.getenv(key_var)`, returns `{"providers":[...]}`. |
+| **S3** Create session | `POST /api/sessions` writes to in-memory `sessions` dict, calls `database.save_session`, returns `{"session_id":"..."}`. |
+| **S4** Upload PDF | `upload_docs` accepts `.pdf`, calls `ingest_pdf`, appends to `session.docs`, returns `{"docs":[...],"skipped":[]}`. |
+| **S5** Upload questionnaire | `upload_questionnaire` dispatches by suffix to `parse_excel_questionnaire` / `parse_pdf_questionnaire` / `parse_text_questionnaire`, returns questions list. |
+| **S6** Process returns immediately | `process_questionnaire` sets `session.processing=True` then calls `background_tasks.add_task(run_answer_engine, ...)` and immediately returns `{"status":"processing","total":N}`. Non-blocking confirmed. |
+| **S7** Export | `GET /api/sessions/{id}/export/excel` and `/export/pdf` both implemented, return `StreamingResponse`. |
+| **S8** Upload .docx | Suffix `.docx` is in `SUPPORTED_DOC_TYPES`; `ingest_docx` called; file lands in `docs`, not `skipped`. |
+| **S9** Upload .txt skipped | Suffix `.txt` not in `SUPPORTED_DOC_TYPES`; filename appended to `skipped` list, no 400. |
+| **S10** SSE stream opens | `GET /api/sessions/{id}/stream` returns `StreamingResponse(media_type="text/event-stream")` with `Cache-Control: no-cache, X-Accel-Buffering: no`. |
+| **E1** Non-PDF/DOCX returns skipped | Confirmed: any unsupported extension hits `skipped.append(file.filename)` and continues — no exception. |
+| **E3** No docs — hedged answers | `engine.py` prompt instructs: if docs don't cover the question, write hedged answer starting "As a SOC 2 Type II certified organization..." with `evidence_coverage: "none"`, `answer_tone: "hedged"`. `build_doc_context([])` returns `""` safely. |
+| **E5** Invalid session ID | `get_session()` raises `HTTPException(status_code=404, detail="Session not found")` when key absent from both in-memory store and Supabase. |
+| **P1** All N answers arrive | `run_answer_engine` uses `as_completed`; every future result (including exceptions) increments `session.processed_count` in the `finally` block. Failed questions receive a fallback `Answer` object — no silent drops. |
+| **P2** Order independence + seen dedup | `event_generator` in `stream_answers` uses a `seen: set` to skip already-emitted `qid`s. Iterates snapshot of `session.answers` every 0.3s. Sends `[DONE]` when `not session.processing and len(seen) >= session.total_questions`. |
+| **P4** ANSWER_CONCURRENCY=1 sequential mode | `_CONCURRENCY_RAW = int(os.getenv("ANSWER_CONCURRENCY", "1"))` — default is already 1. `ThreadPoolExecutor(max_workers=1)` with `as_completed` processes questions one at a time. DB saves use a separate `_db_save_executor` (max_workers=4) so they do not compete with the single answer-worker thread. |
+| **P6** max_tokens per format | `_max_tokens_for_format()` returns 512 (yes_no), 900 (yes_no_evidence), 2048 (freeform). Called per-question in `answer_question()` before `chat()`. |
+| **P7** doc_context built once | `build_doc_context(session.docs)` called once at the top of `run_answer_engine()`, before the executor. Passed as `doc_context=doc_context` kwarg into every `process_one()` call. The `if doc_context is None` guard in `answer_question()` is a safety net only, not triggered in normal flow. |
+
+---
+
+### REQUIRES_LIVE_TEST — Needs manual run with live credentials or browser
+
+These scenarios cannot be confirmed by static code review alone. A live Groq key, actual files, or a browser session is required.
+
+| Scenario | Why live test is needed |
+|---|---|
+| **E2** Empty questionnaire | Depends on parser behavior (`parse_excel_questionnaire`, etc.) with zero-row input — no static guarantee. |
+| **E4** No questions uploaded | `POST /process` guard checks `not session.questions` → 400, but parser edge case must be exercised end-to-end. |
+| **E6** Groq key missing → 400 | Code returns HTTP 400 (not 500 as the scenario states — minor doc discrepancy confirmed). The 400 message is: `"{GROQ_API_KEY} not configured for provider 'groq'..."`. Scenario text says "500" — update scenario text in a follow-up. Verify the exact response body live. |
+| **E7** Rapid-fire 10 requests | `RateLimitMiddleware` is **disabled** (commented out in `main.py` lines 39–41, 69–72). Rate limiting will NOT kick in. Scenario is currently vacuous. Track as known gap until middleware is re-enabled. |
+| **P3** SSE connection drop / frontend onerror | Requires browser devtools — `Processing.jsx` `es.onerror` handler and error banner cannot be verified without a running frontend. |
+| **P5** 429 retry / key rotation under load | Requires a live Groq call that actually hits a rate limit. Groq TPM/TPD rotation logic is correct in code (verified), but end-to-end behavior (log entries, timing, eventual success) needs a live run. |
+| **D1** SOC 2 PDF → substantive answers | Requires a real PDF upload and live LLM call to verify no "cannot answer" strings appear. |
+| **D2** No docs → hedged framing | Code path is verified (E3 above), but the exact wording "As a SOC 2..." must be confirmed against a live LLM response. |
+| **D3** 3 docs → no crash | Requires multi-file upload and live processing run to rule out memory or timeout issues. |
+| **D4** 30-question XLSX → all 30 parsed | Requires `docs/sample_questionnaire.xlsx` and a live run with `parse_excel_questionnaire`. |
+| **All Provider Scenarios** (Anthropic, Google) | Require their respective API keys (`ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`). Only Groq is currently configured. |
+
+---
+
+### BLOCKED — Known issues preventing verification
+
+| Scenario | Issue | Tracking |
+|---|---|---|
+| **P4 edge case** — `ANSWER_CONCURRENCY=0` graceful failure | `ThreadPoolExecutor(max_workers=0)` raises `ValueError` at the point `run_answer_engine` is called (inside `background_tasks`), not at server startup. The server starts cleanly but the first `POST /process` will fail with an unhandled background exception (returns 200 immediately, silently fails). The scenario states "backend should fail loudly at startup" — this is NOT the current behavior. A startup validation guard is needed. Tracked as a known gap; do not re-investigate. | `agents/shared/decisions.md` |
+
+---
+
+### Known working configuration (2026-03-09)
+
+```
+ANSWER_CONCURRENCY=1         # sequential mode; safe default; no thread-safety risk on session.answers
+QUESTION_DELAY_S=1.5         # 1.5s sleep between question completions; keeps TPM well below Groq free-tier limit
+GROQ pool: 5 keys            # GROQ_API_KEY + GROQ_API_KEY_2 through GROQ_API_KEY_5
+TPD blacklisting: active     # _exhausted_keys set + _exhausted_lock in llm.py; keys that hit daily limit are
+                             #   permanently skipped for the process lifetime; remaining key count logged on exhaustion
+RateLimitMiddleware: OFF     # disabled pending middleware exception-ordering fix (see decisions.md)
+SecurityHeadersMiddleware: OFF
+RequestTracingMiddleware: OFF
+```
+
+---
+
 ## Regression Checklist (after any backend change)
 - [ ] ingest.py: upload a multi-page PDF — no `ValueError: document closed`
 - [ ] CORS: frontend can reach all API endpoints

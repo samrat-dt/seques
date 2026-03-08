@@ -136,3 +136,153 @@
 - **Residual concern**: If an API key is rotated (e.g. revoked and reissued after a suspected leak), the cached client will continue using the old key until the process restarts. This means a revoked key remains in use for the life of the current process, which could be hours in a long-running deployment. There is no mechanism to invalidate the cache without a restart.
 - **Fix approach**: If key rotation without downtime becomes a requirement, replace `lru_cache` with a manual singleton that re-reads the env var and re-instantiates the client when the key changes. For Phase 1 this is not a blocker.
 - **Accepted**: Yes — for Phase 1 (server-env keys only, no user-supplied keys). Revisit in Phase 2 if key rotation SLAs are introduced.
+
+---
+
+## Phase 1 Checkpoint Security Sign-Off — 2026-03-09
+
+**Branch reviewed**: `feat/backend-improvements`
+**Reviewer**: security agent
+**Verdict**: CONDITIONAL GO — Phase 1 internal/dev use only. NOT cleared for production or any shared multi-tenant environment. Specific blockers for production listed below.
+
+---
+
+### 1. Verification of SEC-013, SEC-014, SEC-015 Fixes
+
+#### SEC-013 — ThreadPoolExecutor exhaustion via repeated unauthenticated `/process` calls
+**Status: FIXED (verified)**
+
+- `main.py` line 457–458: `if session.processing: raise HTTPException(status_code=409, detail="Session is already being processed. Wait for it to complete.")` — the idempotency guard is in place. A session whose `processing` flag is `True` will now reject a second `/process` call with HTTP 409 before spawning any new executor.
+- `main.py` lines 115–119: `ANSWER_CONCURRENCY = min(_CONCURRENCY_RAW, 20)` — thread pool size is hard-capped at 20 regardless of env var.
+- `main.py` line 126: `_db_save_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="db-save")` — a separate, bounded, module-level executor handles DB saves, eliminating the prior pattern where DB futures competed with LLM futures in the same pool.
+- **Residual risk**: The per-session `ThreadPoolExecutor(max_workers=ANSWER_CONCURRENCY)` at line 494 is still created fresh per `run_answer_engine()` invocation rather than being a process-wide singleton. The idempotency guard at line 457 prevents re-entry on a live session, but N concurrent sessions each create their own pool. With the 20-thread cap, maximum concurrency is 20 × (number of concurrent sessions). For Phase 1 (low concurrent session count) this is acceptable; for Phase 2 a global executor singleton is recommended.
+
+#### SEC-014 — Silent fire-and-forget `database.save_answer()` failures
+**Status: FIXED (verified)**
+
+- `main.py` lines 503–508: A `_on_save_done` callback is attached to every `_db_save_executor.submit(database.save_answer, ...)` future via `.add_done_callback()`. If the future raises, `fut.exception()` is non-None and a structured `logger.error("db_save_failed", ...)` is emitted with `session_id` and `question_id`.
+- DB save futures now run in the dedicated `_db_save_executor` (4 threads) defined at module level, not in the LLM answer pool.
+- **Residual gap**: The callback logs to the observability logger but does not emit an `audit.emit()` entry. A SOC 2 CC7.2 auditor may expect that every failed persistence attempt appears in the audit trail, not only in the structured log. This gap is low priority for Phase 1 but should be closed before a SOC 2 audit.
+- **Residual gap**: There is no retry on DB save failure. In-memory state is preserved, but if the process restarts before a successful retry the answer is lost. Acceptable for Phase 1 in-memory sessions; Phase 2 Supabase persistence must add a retry or write-ahead log.
+
+#### SEC-015 — `ANSWER_CONCURRENCY` env var unbounded
+**Status: FIXED (verified)**
+
+- `main.py` lines 115–119: Value is read, clamped to 20, and a `warnings.warn()` is emitted if the raw value exceeded the cap. Code path:
+  ```
+  _CONCURRENCY_RAW = int(os.getenv("ANSWER_CONCURRENCY", "1"))
+  ANSWER_CONCURRENCY = min(_CONCURRENCY_RAW, 20)
+  if _CONCURRENCY_RAW > 20:
+      warnings.warn(f"ANSWER_CONCURRENCY={_CONCURRENCY_RAW} exceeds max of 20; clamped to 20.")
+  ```
+- Note: the default changed from `"10"` (as documented in the original SEC-015 issue) to `"1"`. This is a more conservative default that reduces denial-of-wallet blast radius (SEC-010) and is consistent with the new `QUESTION_DELAY_S` throttle. The original issue description's documented default (`"10"`) is now outdated — no action required, but the runbook should be updated to reflect default of 1.
+
+---
+
+### 2. SEC-012 — SSE Endpoint (Unauthenticated Session Stream)
+**Status: OPEN — documented as Phase 2, no immediate code fix required**
+
+- `main.py` lines 568–610: The `GET /api/sessions/{session_id}/stream` endpoint calls `get_session(session_id)` (line 578) and immediately begins streaming `session.answers` as SSE events. No `Authorization` header, no session ownership check, no read token validation is present.
+- This is intentional and correctly deferred: no authentication layer exists at all in Phase 1 (SEC-002). Patching `/stream` in isolation while every other endpoint (`/answers`, `/status`, `/export/*`) remains unauthenticated provides no meaningful incremental security.
+- The full fix requires SEC-002 (Supabase JWT auth) + SEC-001 (CORS restriction), both Phase 2 items. The interim session-scoped read token approach described in the SEC-012 detail section remains viable if Phase 1 is exposed to multiple users before Phase 2 ships.
+- **Production blocker**: This is a hard blocker for any production or shared deployment where multiple distinct users or organisations share the same server instance. It is not a blocker for single-operator/dev use.
+
+---
+
+### 3. New Issues Identified in This Review
+
+#### NEW-001 — Global exception handler leaks internal exception messages to callers
+**Severity**: MEDIUM
+**Location**: `main.py` lines 82–89
+
+```python
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error("unhandled_exception", extra={"path": request.url.path, "error": str(exc)})
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {exc}"},
+    )
+```
+
+- `str(exc)` is interpolated directly into the HTTP 500 response body returned to the caller. Python exceptions frequently include internal details: file paths, variable values, library version strings, SQL fragments, and third-party API error messages (e.g. Supabase client errors, OpenAI SDK errors).
+- An attacker can deliberately trigger exceptions (e.g. malformed JSON body, invalid session ID formats, oversized payloads on un-guarded paths) and read the response body to extract implementation details useful for further attacks.
+- **Fix approach**: Return a generic message (`"Internal server error. See server logs for details."`) in the response body. Keep `str(exc)` in the structured logger call only, where it is not visible to external callers.
+- **Phase**: Low-effort fix; implement before any non-local deployment.
+
+#### NEW-002 — `QUESTION_DELAY_S` applies globally including to errors, serialising the executor
+**Severity**: LOW (operational risk, not a security vulnerability per se)
+**Location**: `main.py` lines 532–533
+
+```python
+finally:
+    session.processed_count += 1
+    if QUESTION_DELAY_S > 0:
+        time.sleep(QUESTION_DELAY_S)
+```
+
+- The `time.sleep(QUESTION_DELAY_S)` call is inside the `finally` block of the per-question `try/except` in `run_answer_engine()`. This means the delay fires even when a question fails immediately (e.g. LLM key missing, network error). With `ANSWER_CONCURRENCY=1` (the new default) and a 1.5-second delay, each failed question adds 1.5 s of unrecoverable wait to the processing pipeline.
+- From a security standpoint: an attacker who triggers repeated failures (e.g. by causing the LLM provider to 429 every request) can force the processing pipeline into a slow-walk state, degrading throughput for concurrent legitimate sessions. This is a weak amplification of the DoS vectors in SEC-010 and SEC-013, not an independent blocker.
+- **Phase**: Accept for Phase 1. Revisit if the delay causes user-visible issues in practice.
+
+#### NEW-003 — `_exhausted_keys` set is process-lifetime; no persistence or cross-process synchronisation
+**Severity**: LOW
+**Location**: `llm.py` lines 59–60, 73–79
+
+```python
+_exhausted_keys: set[str] = set()
+_exhausted_lock = threading.Lock()
+```
+
+- Once a Groq API key is added to `_exhausted_keys` via `_mark_exhausted()`, it is never removed for the life of the process. There is no time-based expiry and no persistence across restarts.
+- **Consequence 1 — false permanent blacklist**: A transient TPD-like error (e.g. a malformed 429 response that matches the `_is_tpd_error()` heuristic at `llm.py` lines 100–102) will permanently blacklist a healthy key for the process lifetime. The heuristic matches any exception whose `str()` contains `"tokens per day"` or `"per day"` (case-insensitive). This is a substring match, not a structured API field check; a Supabase or other library error whose message happens to include `"per day"` would incorrectly trigger exhaustion.
+- **Consequence 2 — restart clears blacklist**: The daily exhaustion state is not persisted. If the process restarts at 11:59 PM, keys correctly exhausted for that UTC day will be retried at restart, burning quota from the new day correctly, but any legitimate mid-day restart clears genuine exhaustion and causes renewed 429s until keys are re-exhausted.
+- **Consequence 3 — no cross-worker sync**: In a multi-worker deployment (e.g. Gunicorn with multiple workers), each worker maintains its own `_exhausted_keys`. A key exhausted in worker A continues to be used by worker B.
+- **Fix approach**: Use a structured field from the API error object (e.g. `exc.code == "rate_limit_exceeded"` combined with a `"daily"` subtype) rather than substring matching. Add a time-based expiry to `_exhausted_keys` (e.g. reset at midnight UTC). For Phase 1 single-worker dev use, this is low risk.
+- **Phase**: Accept for Phase 1 single-worker deployment. Flag for Phase 2 multi-worker hardening.
+
+---
+
+### 4. Issue Table — Updated Status
+
+| ID | Severity | Title | Status | Owner |
+|---|---|---|---|---|
+| SEC-001 | HIGH | CORS wildcard (`allow_origins=["*"]`) | Open — Phase 2 | security |
+| SEC-002 | HIGH | No authentication — all endpoints public | Open — Phase 2 | backend |
+| SEC-003 | MEDIUM | Custom middleware disabled (SecurityHeaders, RateLimit) | Open — Phase 2 | backend |
+| SEC-004 | MEDIUM | In-memory rate limiter resets on restart | Open — Phase 2 | backend |
+| SEC-005 | MEDIUM | Service role Supabase key used from backend (should be anon+RLS) | Open | infra |
+| SEC-006 | LOW | No HTTPS enforced in dev | Accepted (dev only) | security |
+| SEC-007 | LOW | `audit.log` stored on ephemeral filesystem | Open | infra |
+| SEC-008 | LOW | API keys stored in `.env` file (not a secrets manager) | Open | infra |
+| SEC-009 | MEDIUM | No file size limit on `.docx` uploads — zip bomb / memory exhaustion DoS | Fixed 2026-03-08 | backend |
+| SEC-010 | MEDIUM | 96k char LLM context budget with no auth/rate limiting — denial-of-wallet amplification | Open (blocked on SEC-002/003/004) | backend |
+| SEC-011 | LOW | Upload route validates file type by extension only — MIME type not checked | Fixed 2026-03-08 | backend |
+| SEC-012 | HIGH | SSE stream endpoint leaks any session's answers to any unauthenticated caller | Open — Phase 2 (deferred, no immediate code fix) | backend |
+| SEC-013 | HIGH | ThreadPoolExecutor exhaustion via repeated unauthenticated `/process` calls | Fixed 2026-03-09 | backend |
+| SEC-014 | MEDIUM | Fire-and-forget `database.save_answer()` failures are silent — data loss, no audit | Fixed 2026-03-09 (logging callback added; audit trail gap remains LOW) | backend |
+| SEC-015 | MEDIUM | `ANSWER_CONCURRENCY` env var unbounded — operator misconfiguration can starve the process | Fixed 2026-03-09 (clamped to 20, warns on excess) | infra |
+| SEC-016 | LOW | `lru_cache` on LLM clients pins stale API keys if env vars rotate without restart | Accepted — Phase 1 | backend |
+| NEW-001 | MEDIUM | Global exception handler leaks `str(exc)` to HTTP response body — information disclosure | Open | backend |
+| NEW-002 | LOW | `QUESTION_DELAY_S` fires on error paths, serialising executor under failure conditions | Accepted — Phase 1 | backend |
+| NEW-003 | LOW | `_exhausted_keys` heuristic uses substring match; no time-based expiry; no cross-worker sync | Accepted — Phase 1 single-worker | backend |
+
+---
+
+### 5. Production Go/No-Go Assessment
+
+**PHASE 1 (single-operator, local/dev): GO**
+All Phase 1 targetted issues are resolved or formally accepted. The three fixes (SEC-013, SEC-014, SEC-015) are correctly implemented and verified at the code level. No regressions introduced.
+
+**PRODUCTION / MULTI-TENANT: NO-GO**
+The following issues are hard blockers for production deployment:
+
+| Blocker | Issue | Reason |
+|---|---|---|
+| BLOCK-1 | SEC-002 | No authentication — any actor with any session UUID can read, modify, or export any session |
+| BLOCK-2 | SEC-012 | SSE endpoint streams all draft answers without ownership verification |
+| BLOCK-3 | SEC-001 | CORS wildcard enables cross-origin exploitation of BLOCK-1 and BLOCK-2 from any browser tab |
+| BLOCK-4 | NEW-001 | Exception messages leaked in HTTP 500 bodies disclose internal stack and library details |
+| BLOCK-5 | SEC-010 | No rate limiting on session creation or `/process` — denial-of-wallet attack is trivially executable |
+
+NEW-001 is the only new blocker introduced since the last review. It is a low-effort fix (change one line in `global_exception_handler`) and should be resolved before any non-localhost deployment regardless of Phase 2 timeline.
