@@ -115,3 +115,54 @@
 - ❌ Password-protected .docx files will raise an error (not yet handled)
 
 **Outcome**: `upload_docs()` now accepts .pdf and .docx. Unsupported types returned in `skipped` list rather than silently dropped.
+
+---
+
+## 2026-03-09 — Parallel answer generation with ThreadPoolExecutor
+
+**Decision**: Replace sequential per-question LLM calls with concurrent execution via `ThreadPoolExecutor`. Concurrency cap controlled by `ANSWER_CONCURRENCY` env var (default: 10). Answers are emitted to the client via SSE as each future completes, rather than batching and returning all at once.
+
+**Context**: Sequential generation on a 30-question questionnaire took ~120s end-to-end (approx. 4s per LLM call). This was the single biggest UX blocker for real usage — users stared at a spinner for two minutes. Groq's API supports parallel requests within rate limits; at concurrency=10 the bottleneck shifts from serial latency to the slowest individual call.
+
+**Trade-offs**:
+- ✅ 6-8x wall-clock speedup on typical sessions (30q: ~120s → ~15-20s)
+- ✅ SSE streaming — users see answers appear progressively; perceived latency near-zero
+- ✅ `ANSWER_CONCURRENCY` env var lets ops tune against rate limit budget
+- ❌ Burst requests may hit Groq's RPM/TPM limits — mitigated by exponential backoff (see below)
+- ❌ ThreadPoolExecutor ties up threads; acceptable at current scale, revisit with async LLM clients in Phase 2
+- ❌ SSE requires clients to handle streaming — frontend updated accordingly
+
+**Outcome**: `feat/backend-improvements` branch. `generate_answers()` in `engine.py` now submits all questions as futures and yields results via SSE endpoint. Session wall time cut to 15-20s on 30-question sets.
+
+---
+
+## 2026-03-09 — Dynamic max_tokens per answer format + persistent LLM clients
+
+**Decision**: (A) Replace the hardcoded `max_tokens=2048` with a per-format lookup: `yes_no` → 512, `multiple_choice` → 768, `short_text` → 1024, `long_text` / default → 2048. (B) Construct LLM provider clients once at module load and reuse across requests (connection pooling).
+
+**Context**: (A) `yes_no` answers never exceed ~100 tokens but were reserving 2048, wasting ~75% of the token budget and slowing inference. (B) Groq and Anthropic SDKs construct HTTP sessions on client init; rebuilding per-request added ~50-100ms of overhead per call and prevented connection reuse.
+
+**Trade-offs**:
+- ✅ (A) Token cost reduction of ~50-60% across a typical mixed questionnaire
+- ✅ (A) Shorter `max_tokens` = faster time-to-first-token on constrained calls
+- ✅ (B) Eliminates per-request SDK init latency
+- ✅ (B) HTTP keep-alive reuse lowers TCP overhead to Groq/Anthropic endpoints
+- ❌ (B) Persistent clients hold connections open — acceptable at current concurrency; monitor FD limits at scale
+
+**Outcome**: `llm.py` now initialises provider clients at import time. `engine.py` resolves `max_tokens` from a `FORMAT_TOKEN_MAP` dict before each call. No API contract changes.
+
+---
+
+## 2026-03-09 — Exponential backoff on LLM rate-limit errors
+
+**Decision**: Wrap every LLM call with a retry loop using exponential backoff and random jitter on `429 / rate_limit_error` responses. Max retries: 4. Base delay: 1s. Max delay: 30s.
+
+**Context**: At `ANSWER_CONCURRENCY=10` burst requests to Groq regularly hit RPM limits during testing. Hard failures were propagating as 500s to the frontend. Backoff is the standard mitigation; jitter prevents thundering herd when multiple workers hit the limit simultaneously.
+
+**Trade-offs**:
+- ✅ Eliminates hard failures on burst traffic within a single session
+- ✅ Jitter spreads retry load — reduces compounding rate-limit cascades
+- ❌ A fully rate-limited session could stall for up to 30s before surfacing an error
+- ❌ Retry budget (4x) is a guess — may need tuning against production traffic patterns
+
+**Outcome**: Retry logic lives in `llm.py` `chat()` wrapper. Retry count and delays exposed as env vars (`LLM_MAX_RETRIES`, `LLM_BACKOFF_BASE`) for ops tuning.

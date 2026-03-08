@@ -1,5 +1,5 @@
 # Seques — Architecture Reference
-Last updated: 2026-03-08
+Last updated: 2026-03-09
 
 ---
 
@@ -32,6 +32,7 @@ Last updated: 2026-03-08
 │    POST /api/sessions/{id}/questionnaire → parse Q's     │
 │    POST /api/sessions/{id}/process     → kick off AI     │
 │    GET  /api/sessions/{id}/status      → poll progress   │
+│    GET  /api/sessions/{id}/stream      → SSE answer feed │
 │    GET  /api/sessions/{id}/answers     → fetch results   │
 │    PATCH /api/sessions/{id}/answers/{qid} → edit/approve │
 │    GET  /api/sessions/{id}/export/excel                  │
@@ -82,23 +83,28 @@ Last updated: 2026-03-08
 
 3. User clicks "Process"
    → POST /process → background task runs run_answer_engine()
-   → For each question:
-       a. engine.py calls build_doc_context():
-            - Per-doc budget: min(40k, 96k ÷ n) chars, where n = number of docs
-            - Total context cap: 96k chars across all docs
-       b. engine.py builds a prompt using a "senior security compliance consultant"
-          system persona with embedded SOC 2 / ISO 27001 framework knowledge
-       c. If uploaded docs lack relevant text, engine falls back to domain
+   → build_doc_context() is called ONCE for all questions (not per-question)
+   → Questions are dispatched to a ThreadPoolExecutor (default ANSWER_CONCURRENCY=10 workers)
+   → Each worker thread runs answer_question() in parallel:
+       a. engine.py builds a prompt using a "senior security compliance consultant"
+          system persona with embedded SOC 2 / ISO 27001 framework knowledge and
+          the pre-built shared doc context
+       b. If uploaded docs lack relevant text, engine falls back to domain
           knowledge — answer_tone is always "assertive" or "hedged";
           "cannot_answer" is never emitted
-       d. llm.chat() sends to chosen provider (max_tokens: 2048)
-       e. Provider returns JSON with draft_answer, certainty, coverage
-       f. engine.py validates + creates Answer object
-       g. session.answers[question.id] = answer
-       h. audit.emit("processing.complete")
-       i. analytics.processing_completed()
+       c. llm.chat() sends to chosen provider (max_tokens: 2048)
+       d. Provider returns JSON with draft_answer, certainty, coverage
+       e. engine.py validates + creates Answer object
+       f. session.answers[question.id] = answer  (written as each future completes)
+   → On completion: audit.emit("processing.complete"), analytics.processing_completed()
 
-4. Frontend polls GET /status until processing=false
+4. Frontend receives answers in real time via SSE or by polling
+   Option A — SSE (preferred): GET /api/sessions/{id}/stream
+     → Streams each Answer as a JSON SSE event as soon as it completes
+     → Sends `data: [DONE]` sentinel when all answers are ready
+     → Allows the Review screen to render answers incrementally
+   Option B — Polling: GET /api/sessions/{id}/status until processing=false
+     → Returns { processing, processed, total } for a progress indicator
    → Renders QuestionCard for each answer
 
 5. User edits or approves
@@ -157,6 +163,7 @@ Total context across all docs is capped at 96,000 chars to stay within LLM conte
 | `ENVIRONMENT` | No | `development` | Affects CSP/HSTS headers |
 | `APP_VERSION` | No | `1.0.0` | Emitted in every log line |
 | `RATE_LIMIT_PER_MINUTE` | No | `30` | Requests/min per IP (mutations) |
+| `ANSWER_CONCURRENCY` | No | `10` | Max parallel LLM calls during processing (ThreadPoolExecutor workers) |
 | `AUDIT_LOG_PATH` | No | `audit.log` | Path to audit log file |
 
 ---

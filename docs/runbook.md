@@ -1,6 +1,6 @@
 # Operations Runbook
 **Product**: Seques — Security Questionnaire Co-Pilot
-Last updated: 2026-03-08
+Last updated: 2026-03-09
 
 ---
 
@@ -50,6 +50,12 @@ curl http://localhost:8000/health
 1. Check `audit.log` for `"msg": "rate_limit_exceeded"` entries and offending IP
 2. Block IP at reverse proxy/firewall level
 3. If distributed attack, reduce `RATE_LIMIT_PER_MINUTE` temporarily
+
+### Processing too slow / high LLM latency
+1. Check `audit.log` for `"action": "processing.complete"` events — inspect `duration_ms`
+2. Increase parallel workers: set `ANSWER_CONCURRENCY` (default: `10`) in `backend/.env` and restart
+3. Reduce if hitting LLM provider rate limits — lower concurrency means fewer simultaneous API calls
+4. Switch to a faster provider: Groq is typically fastest on free tier
 
 ---
 
@@ -155,9 +161,33 @@ Valid `answer_tone` values are `"assertive"` (answer backed by uploaded docs) an
 3. Upload a `.docx` policy doc and confirm it appears in `"ingested"`.
 4. Upload `docs/sample_questionnaire.xlsx` via the frontend or `POST /api/sessions/{id}/questionnaire`.
 5. Trigger processing: `POST /api/sessions/{id}/process`
-6. Poll `GET /api/sessions/{id}/status` until `"processing": false`.
+6. Stream answers in real time via SSE: `GET /api/sessions/{id}/stream` (preferred), or poll `GET /api/sessions/{id}/status` until `"processing": false`.
 7. Fetch answers and run the `"cannot_answer"` check above.
 8. Spot-check several `"hedged"` answers — they should contain substantive draft text, not a refusal.
+
+---
+
+### Streaming Answers via SSE (2026-03-09)
+
+The `GET /api/sessions/{id}/stream` endpoint streams answers as Server-Sent Events while processing is running. Each event carries the full JSON payload of one answer. A final `data: [DONE]` sentinel is sent when all answers are complete.
+
+```bash
+# Consume the SSE stream from a terminal
+curl -N http://localhost:8000/api/sessions/{SESSION_ID}/stream
+
+# Each event looks like:
+# data: {"question_id": "...", "draft_answer": "...", "answer_tone": "assertive", ...}
+#
+# Final event:
+# data: [DONE]
+```
+
+Headers returned by the endpoint:
+- `Content-Type: text/event-stream`
+- `Cache-Control: no-cache`
+- `X-Accel-Buffering: no` — disables nginx proxy buffering so events reach the client immediately
+
+Use the SSE stream when you want answers to appear incrementally (e.g., in the Review screen). Use the polling endpoint (`GET /status`) when you only need a completion signal.
 
 ---
 
