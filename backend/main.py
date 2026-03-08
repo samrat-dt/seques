@@ -7,11 +7,14 @@ ReDoc:       http://localhost:8000/redoc
 OpenAPI JSON: http://localhost:8000/openapi.json
 """
 
+import asyncio
 import io
+import json
 import os
 import tempfile
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -26,7 +29,7 @@ from pydantic import BaseModel
 import analytics
 import audit
 import database
-from engine import answer_question
+from engine import answer_question, build_doc_context
 from export import export_excel, export_pdf
 from ingest import ingest_docx, ingest_manual, ingest_pdf
 from llm import PROVIDER_KEYS, PROVIDER_MODELS
@@ -98,6 +101,8 @@ class Session:
 
 
 sessions: Dict[str, Session] = {}
+
+ANSWER_CONCURRENCY = int(os.getenv("ANSWER_CONCURRENCY", "10"))
 
 
 def get_session(session_id: str) -> Session:
@@ -449,41 +454,52 @@ async def process_questionnaire(
 
 
 def run_answer_engine(session_id: str):
-    """Synchronous worker — runs in FastAPI's thread pool."""
+    """Synchronous worker — runs in FastAPI's thread pool. Answers questions in parallel."""
     session = sessions[session_id]
     error_count = 0
     needs_review_count = 0
 
+    # Build doc context once for all questions (not per-question)
+    doc_context = build_doc_context(session.docs)
+
+    def process_one(question):
+        return question, answer_question(
+            question, session.docs, provider=session.provider, doc_context=doc_context
+        )
+
     try:
-        for question in session.questions:
-            try:
-                answer = answer_question(question, session.docs, provider=session.provider)
-                session.answers[question.id] = answer
-                database.save_answer(session_id, answer)
-                if answer.needs_review:
-                    needs_review_count += 1
-            except Exception as e:
-                error_count += 1
-                logger.error("answer_generation_failed", extra={
-                    "session_id": session_id,
-                    "question_id": question.id,
-                    "error": str(e),
-                })
-                session.answers[question.id] = Answer(
-                    question_id=question.id,
-                    question_text=question.text,
-                    draft_answer="This question requires vendor review. Please provide your response based on your actual security practices.",
-                    evidence_coverage=EvidenceCoverage.none,
-                    coverage_reason="System error during generation",
-                    ai_certainty=0,
-                    certainty_reason=str(e),
-                    evidence_sources=[],
-                    answer_tone=AnswerTone.hedged,
-                    needs_review=True,
-                    status=AnswerStatus.draft,
-                )
-            finally:
-                session.processed_count += 1
+        with ThreadPoolExecutor(max_workers=ANSWER_CONCURRENCY) as executor:
+            futures = {executor.submit(process_one, q): q for q in session.questions}
+            for future in as_completed(futures):
+                question = futures[future]
+                try:
+                    _, answer = future.result()
+                    session.answers[question.id] = answer
+                    if answer.needs_review:
+                        needs_review_count += 1
+                    executor.submit(database.save_answer, session_id, answer)
+                except Exception as e:
+                    error_count += 1
+                    logger.error("answer_generation_failed", extra={
+                        "session_id": session_id,
+                        "question_id": question.id,
+                        "error": str(e),
+                    })
+                    session.answers[question.id] = Answer(
+                        question_id=question.id,
+                        question_text=question.text,
+                        draft_answer="This question requires vendor review. Please provide your response based on your actual security practices.",
+                        evidence_coverage=EvidenceCoverage.none,
+                        coverage_reason="System error during generation",
+                        ai_certainty=0,
+                        certainty_reason=str(e),
+                        evidence_sources=[],
+                        answer_tone=AnswerTone.hedged,
+                        needs_review=True,
+                        status=AnswerStatus.draft,
+                    )
+                finally:
+                    session.processed_count += 1
     finally:
         session.processing = False
         duration_ms = int((time.time() - (session.processing_started_at or time.time())) * 1000)
@@ -516,6 +532,37 @@ def get_status(session_id: str):
         "processed": session.processed_count,
         "total": session.total_questions,
     }
+
+
+@app.get(
+    "/api/sessions/{session_id}/stream",
+    tags=["answers"],
+    summary="Stream answers via Server-Sent Events as they complete",
+)
+async def stream_answers(session_id: str):
+    """
+    Server-Sent Events endpoint. Emits each answer as JSON as it completes during processing.
+    Sends `data: [DONE]` when all answers are ready.
+    """
+    session = get_session(session_id)
+
+    async def event_generator():
+        seen: set = set()
+        while True:
+            for qid, answer in list(session.answers.items()):
+                if qid not in seen:
+                    seen.add(qid)
+                    yield f"data: {json.dumps(answer.model_dump())}\n\n"
+            if not session.processing and len(seen) >= session.total_questions and session.total_questions > 0:
+                yield "data: [DONE]\n\n"
+                break
+            await asyncio.sleep(0.3)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get(

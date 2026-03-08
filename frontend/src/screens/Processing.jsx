@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { getStatus, getAnswers } from '../api'
+import { useState, useEffect, useRef } from 'react'
+import { getAnswers } from '../api'
 
 function ProgressBar({ label, pct, done, active }) {
   const width = done ? 100 : active ? pct : 0
@@ -24,33 +24,50 @@ function ProgressBar({ label, pct, done, active }) {
 }
 
 export default function Processing({ sessionId, onDone }) {
-  const [status, setStatus] = useState({ processing: true, processed: 0, total: 0 })
+  const [answered, setAnswered] = useState(0)
+  const [total, setTotal] = useState(0)
   const [error, setError] = useState(null)
+  const esRef = useRef(null)
 
   useEffect(() => {
-    const poll = setInterval(async () => {
-      try {
-        const s = await getStatus(sessionId)
-        setStatus(s)
+    const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+    const es = new EventSource(`${apiBase}/api/sessions/${sessionId}/stream`)
+    esRef.current = es
 
-        const isDone = !s.processing && s.total > 0 && s.processed >= s.total
-        if (isDone) {
-          clearInterval(poll)
+    es.onmessage = async (event) => {
+      if (event.data === '[DONE]') {
+        es.close()
+        try {
           const data = await getAnswers(sessionId)
+          setTotal(data.questions.length)
           onDone(data)
+        } catch (err) {
+          setError(err.message)
         }
-      } catch (err) {
-        setError(err.message)
-        clearInterval(poll)
+        return
       }
-    }, 1500)
+      try {
+        JSON.parse(event.data) // validate answer payload
+        setAnswered((n) => {
+          const next = n + 1
+          return next
+        })
+        setTotal((t) => (t === 0 ? 1 : t)) // will be updated properly on DONE
+      } catch {
+        // malformed SSE message — ignore
+      }
+    }
 
-    return () => clearInterval(poll)
+    es.onerror = () => {
+      es.close()
+      setError('Connection to server lost. Please refresh and try again.')
+    }
+
+    return () => es.close()
   }, [sessionId, onDone])
 
-  const answerPct = status.total > 0 ? (status.processed / status.total) * 100 : 0
-  const docsReady = status.total > 0 || status.processed > 0
-  const parsingDone = docsReady
+  const answerPct = total > 0 ? (answered / total) * 100 : answered > 0 ? 50 : 0
+  const docsReady = answered > 0 || total > 0
 
   return (
     <div className="max-w-lg mx-auto px-6 py-20">
@@ -66,28 +83,28 @@ export default function Processing({ sessionId, onDone }) {
           </div>
         ) : (
           <div className="space-y-5">
-            <ProgressBar label="Parsed compliance documents" done={parsingDone} active={true} pct={100} />
+            <ProgressBar label="Parsed compliance documents" done={docsReady} active={true} pct={100} />
             <ProgressBar
-              label={`Extracted ${status.total} questions`}
-              done={status.total > 0}
-              active={status.total > 0}
+              label="Extracted questions"
+              done={answered > 0}
+              active={answered > 0}
               pct={100}
             />
             <ProgressBar
               label={
-                status.total > 0
-                  ? `Answering question ${status.processed} of ${status.total}`
+                answered > 0
+                  ? `Answered ${answered}${total > 0 ? ` of ${total}` : ''} questions`
                   : 'Generating answers...'
               }
-              done={status.processed > 0 && status.processed >= status.total}
-              active={status.total > 0}
+              done={total > 0 && answered >= total}
+              active={answered > 0 || total > 0}
               pct={answerPct}
             />
           </div>
         )}
 
         <p className="text-slate-400 text-xs text-center mt-8">
-          Typically 1–3 minutes depending on questionnaire size
+          Typically under 30 seconds with parallel processing
         </p>
       </div>
     </div>
