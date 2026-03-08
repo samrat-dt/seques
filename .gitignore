@@ -14,3 +14,11 @@ frontend/dist/
 
 # Temp
 *.tmp
+
+# Additional
+__pycache__/
+*.pyc
+.venv/
+audit.log
+node_modules/
+dist/

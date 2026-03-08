@@ -1,6 +1,6 @@
 # Seques Product Backlog
 
-**Last updated:** 2026-03-08
+**Last updated:** 2026-03-08 (updated mid-sprint for 2026-03-08 delivery)
 **Owner:** Project Manager Agent
 
 ---
@@ -20,10 +20,13 @@
 ## P1 — Phase 2 Core Features
 
 - [ ] RAG pipeline: chunk, embed, semantic search
+  - Note: Doc truncation known gap significantly mitigated as of 2026-03-08 — context budget raised from 8KB to 40k chars per doc / 96k chars total. Full RAG still needed for very large doc sets.
 - [ ] Answer confidence scores
 - [ ] Answer history / version tracking
 - [ ] Multi-tenant: user_id on sessions, RLS in Supabase
 - [ ] Export to Word/PDF
+- [ ] Handle password-protected .docx uploads gracefully (currently will raise an error)
+- [ ] Handle .docx files with text in text boxes or complex tables (python-docx misses these)
 
 ---
 

@@ -91,3 +91,31 @@ High. The entire Phase 1 build was completed in a single focused session using m
 | DPA negotiation takes longer than sprint | High | Start DPA outreach immediately; track separately from engineering sprint |
 | RAG pipeline latency too high for UX | Medium | Implement async processing with progress indicator |
 | Supabase Auth integration breaks existing session model | Medium | Implement behind feature flag; keep anonymous sessions as fallback |
+
+---
+
+## Sprint 002 — Mid-Sprint Delivery (2026-03-08)
+
+**Status:** Shipped
+**Delivered by:** Engineering (single session, 2026-03-08)
+
+These features were completed and merged during Sprint 002 ahead of the planned sprint items. They represent significant product improvements and are now live on `main`.
+
+### Features Shipped
+
+| Feature | Description | Files Changed |
+|---|---|---|
+| Draft-first answer generation | Every question now receives a professional draft answer using SOC 2/ISO 27001 domain knowledge when vendor docs don't cover the topic. Hedged answers tell vendors what to verify. Context budget raised from 8KB → 96k chars total (40k per doc, dynamic allocation). max_tokens raised 1024 → 2048. | `backend/engine.py` |
+| Multi-doc .docx upload | Vendors can now upload Word documents alongside PDFs. Unsupported file types are returned in a `skipped` list (improved UX vs silent drop). | `backend/ingest.py`, `backend/main.py`, `backend/requirements.txt` |
+| Sample test questionnaire | 30-question security questionnaire across 8 categories, color-coded. Ready for demos and QA testing. | `docs/sample_questionnaire.xlsx` |
+
+### Impact on Backlog
+
+- "Doc truncation at 8KB" known gap is now significantly mitigated. Context budget is 40k chars per doc / 96k total. Full RAG still planned for Phase 2 but urgency reduced.
+- Two new P1 backlog items added: password-protected .docx handling, and .docx text-box / complex-table extraction gaps (python-docx limitation).
+
+### Upload UI Changes
+
+- Drop zone now accepts PDF + .docx
+- Multi-select keyboard tip added to upload screen
+- Section heading updated

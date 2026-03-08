@@ -3,6 +3,7 @@ import { getProviders, createSession, uploadDocs, uploadQuestionnaire, processQu
 
 const DOC_TYPE_LABELS = {
   '.pdf': 'PDF',
+  '.docx': 'Word',
 }
 
 const PROVIDER_LABELS = {
@@ -35,12 +36,18 @@ export default function Upload({ onStart }) {
   }, [])
 
   function addComplianceDocs(files) {
-    const pdfs = Array.from(files).filter(
-      (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
-    )
+    const supported = Array.from(files).filter((f) => {
+      const name = f.name.toLowerCase()
+      return (
+        f.type === 'application/pdf' ||
+        f.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+        name.endsWith('.pdf') ||
+        name.endsWith('.docx')
+      )
+    })
     setComplianceDocs((prev) => {
       const existing = new Set(prev.map((f) => f.name))
-      return [...prev, ...pdfs.filter((f) => !existing.has(f.name))]
+      return [...prev, ...supported.filter((f) => !existing.has(f.name))]
     })
   }
 
@@ -121,8 +128,8 @@ export default function Upload({ onStart }) {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Left: Compliance Docs */}
         <div>
-          <h2 className="font-semibold text-slate-700 mb-1">Your Compliance Docs</h2>
-          <p className="text-xs text-slate-400 mb-3">SOC 2, ISO 27001, security policies — PDF only</p>
+          <h2 className="font-semibold text-slate-700 mb-1">Compliance Documents</h2>
+          <p className="text-xs text-slate-400 mb-3">Upload all your evidence: SOC 2, ISO 27001 cert, policies — PDF and Word (.docx) supported</p>
           <div
             className={`border-2 border-dashed rounded-xl p-6 transition-colors min-h-[220px] ${
               dragOverDocs
@@ -142,7 +149,7 @@ export default function Upload({ onStart }) {
           >
             <div className="text-center mb-4">
               <div className="text-3xl mb-2">📋</div>
-              <p className="text-slate-500 text-sm">Drop PDF files here</p>
+              <p className="text-slate-500 text-sm">Drop files here — PDF or Word (.docx)</p>
             </div>
             <label className="block text-center cursor-pointer mb-4">
               <span className="text-blue-600 text-sm font-medium hover:underline">
@@ -150,12 +157,18 @@ export default function Upload({ onStart }) {
               </span>
               <input
                 type="file"
-                accept=".pdf"
+                accept=".pdf,.docx"
                 multiple
                 className="hidden"
                 onChange={(e) => addComplianceDocs(e.target.files)}
               />
             </label>
+
+            {complianceDocs.length === 0 && (
+              <p className="text-center text-xs text-slate-400 mb-3">
+                Tip: Select multiple files with Ctrl+click (Cmd on Mac)
+              </p>
+            )}
 
             {complianceDocs.length > 0 && (
               <div className="space-y-2">

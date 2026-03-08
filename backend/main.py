@@ -28,7 +28,7 @@ import audit
 import database
 from engine import answer_question
 from export import export_excel, export_pdf
-from ingest import ingest_manual, ingest_pdf
+from ingest import ingest_docx, ingest_manual, ingest_pdf
 from llm import PROVIDER_KEYS, PROVIDER_MODELS
 from models import Answer, AnswerStatus, AnswerTone, EvidenceCoverage
 from observability import logger
@@ -232,15 +232,27 @@ def create_session(body: Optional[CreateSessionBody] = None, request: Request = 
 # Compliance docs
 # ---------------------------------------------------------------------------
 
+SUPPORTED_DOC_TYPES = {".pdf", ".docx"}
+SUPPORTED_MIME_TYPES = {
+    ".pdf": {"application/pdf"},
+    ".docx": {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/octet-stream",  # some browsers send this for .docx
+    },
+}
+MAX_DOC_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
 @app.post(
     "/api/sessions/{session_id}/docs",
     tags=["docs"],
-    summary="Upload compliance evidence documents (PDF)",
+    summary="Upload compliance evidence documents (PDF or Word .docx)",
 )
 async def upload_docs(session_id: str, files: List[UploadFile] = File(...), request: Request = None):
     """
-    Upload one or more PDF compliance documents (SOC 2, ISO 27001, security policies).
-    Non-PDF files are silently skipped.
+    Upload one or more compliance documents (SOC 2, ISO 27001, security policies).
+    Supported formats: PDF and Word (.docx). Unsupported types are returned in `skipped`.
+    Maximum file size: 50 MB per file.
 
     **GDPR note**: document text is held in-memory only and never persisted to disk.
     """
@@ -248,27 +260,55 @@ async def upload_docs(session_id: str, files: List[UploadFile] = File(...), requ
     ip = request.client.host if request and request.client else session.client_ip
 
     added = []
+    skipped = []
     for file in files:
         suffix = os.path.splitext(file.filename)[1].lower()
-        if suffix != ".pdf":
+        if suffix not in SUPPORTED_DOC_TYPES:
+            skipped.append(file.filename)
             continue
 
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(await file.read())
+        data = await file.read()
+
+        # SEC-009: reject oversized files before writing to disk
+        if len(data) > MAX_DOC_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File '{file.filename}' exceeds the 50 MB limit ({len(data) // (1024*1024)} MB).",
+            )
+
+        # SEC-011: validate MIME type against allowlist for the given extension
+        content_type = (file.content_type or "").split(";")[0].strip()
+        allowed_mimes = SUPPORTED_MIME_TYPES.get(suffix, set())
+        if content_type and content_type not in allowed_mimes:
+            skipped.append(file.filename)
+            continue
+
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(data)
             tmp_path = tmp.name
 
         try:
-            doc = ingest_pdf(tmp_path, file.filename)
+            if suffix == ".pdf":
+                doc = ingest_pdf(tmp_path, file.filename)
+            else:
+                try:
+                    doc = ingest_docx(tmp_path, file.filename)
+                except Exception as e:
+                    # Catch corrupt/invalid .docx (BadZipFile, etc.) as a 400
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Could not parse '{file.filename}': {e}. Ensure it is a valid, unencrypted Word document.",
+                    )
             session.docs.append(doc)
             added.append({"filename": doc.filename, "doc_type": doc.doc_type, "pages": doc.pages})
         finally:
             os.unlink(tmp_path)
 
     audit.emit("docs.upload", actor=ip, resource_type="session", resource_id=session_id,
-               detail={"filenames": [f["filename"] for f in added], "count": len(added)})
+               detail={"filenames": [f["filename"] for f in added], "count": len(added), "skipped": skipped})
     analytics.docs_uploaded(session_id, len(added), [f["doc_type"] for f in added])
 
-    return {"docs": added}
+    return {"docs": added, "skipped": skipped}
 
 
 @app.post(
@@ -432,13 +472,13 @@ def run_answer_engine(session_id: str):
                 session.answers[question.id] = Answer(
                     question_id=question.id,
                     question_text=question.text,
-                    draft_answer=f"Error generating answer: {e}",
+                    draft_answer="This question requires vendor review. Please provide your response based on your actual security practices.",
                     evidence_coverage=EvidenceCoverage.none,
                     coverage_reason="System error during generation",
                     ai_certainty=0,
                     certainty_reason=str(e),
                     evidence_sources=[],
-                    answer_tone=AnswerTone.cannot_answer,
+                    answer_tone=AnswerTone.hedged,
                     needs_review=True,
                     status=AnswerStatus.draft,
                 )

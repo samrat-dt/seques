@@ -33,6 +33,20 @@ def ingest_pdf(filepath: str, filename: str) -> ComplianceDoc:
     )
 
 
+def extract_docx_text(filepath: str) -> tuple[str, int]:
+    from docx import Document
+    doc = Document(filepath)
+    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+    approx_pages = max(1, len(" ".join(paragraphs)) // 2500)
+    return "\n\n".join(paragraphs), approx_pages
+
+
+def ingest_docx(filepath: str, filename: str) -> ComplianceDoc:
+    text, pages = extract_docx_text(filepath)
+    doc_type, trust_level = detect_doc_type(filename)
+    return ComplianceDoc(filename=filename, doc_type=doc_type, trust_level=trust_level, text=text, pages=pages)
+
+
 def ingest_manual(text: str) -> ComplianceDoc:
     return ComplianceDoc(
         filename="Manual Input",

@@ -95,6 +95,72 @@ uvicorn main:app 2>&1 | jq 'select(.request_id == "YOUR-REQUEST-ID")'
 
 ---
 
+## Testing New Features (2026-03-08)
+
+### Standard Test Questionnaire
+
+`docs/sample_questionnaire.xlsx` is the go-to test file. It contains 30 questions across 8 categories (access control, encryption, incident response, etc.) and is designed to exercise the full answer-generation pipeline. Use it whenever verifying a new LLM provider, prompt change, or ingestion change.
+
+---
+
+### Uploading a .docx Compliance Document
+
+`.docx` is now supported alongside `.pdf`. To verify:
+
+```bash
+# Upload a .docx file to an existing session
+curl -X POST http://localhost:8000/api/sessions/{SESSION_ID}/docs \
+  -F "files=@/path/to/your-policy.docx"
+```
+
+Expected response shape:
+```json
+{
+  "ingested": ["your-policy.docx"],
+  "skipped": []
+}
+```
+
+If a file type is not supported, it appears in `"skipped"` rather than causing an error. Check `"skipped"` in the response to confirm all files were accepted.
+
+---
+
+### Verifying Draft-First Answer Generation
+
+After processing, the engine must always produce a draft — `"cannot_answer"` must never appear in output.
+
+```bash
+# Fetch answers for a session
+curl http://localhost:8000/api/sessions/{SESSION_ID}/answers | jq .
+
+# Confirm no "cannot_answer" tone values
+curl http://localhost:8000/api/sessions/{SESSION_ID}/answers \
+  | jq '[.[] | select(.answer_tone == "cannot_answer")]'
+# Expected output: []
+
+# Confirm all answers have a non-empty draft_answer
+curl http://localhost:8000/api/sessions/{SESSION_ID}/answers \
+  | jq '[.[] | select(.draft_answer == "" or .draft_answer == null)]'
+# Expected output: []
+```
+
+Valid `answer_tone` values are `"assertive"` (answer backed by uploaded docs) and `"hedged"` (answer drawn from domain knowledge — reviewer should verify). Both are acceptable; `"cannot_answer"` is a bug.
+
+---
+
+### End-to-End Smoke Test (new feature path)
+
+1. Start backend and frontend (see Start/Stop above).
+2. Create a session: `POST /api/sessions`
+3. Upload a `.docx` policy doc and confirm it appears in `"ingested"`.
+4. Upload `docs/sample_questionnaire.xlsx` via the frontend or `POST /api/sessions/{id}/questionnaire`.
+5. Trigger processing: `POST /api/sessions/{id}/process`
+6. Poll `GET /api/sessions/{id}/status` until `"processing": false`.
+7. Fetch answers and run the `"cannot_answer"` check above.
+8. Spot-check several `"hedged"` answers — they should contain substantive draft text, not a refusal.
+
+---
+
 ## Updating Dependencies
 
 ```bash

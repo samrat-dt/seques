@@ -12,3 +12,4 @@ python-dotenv
 numpy
 mixpanel
 supabase
+python-docx
