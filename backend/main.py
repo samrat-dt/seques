@@ -104,6 +104,10 @@ sessions: Dict[str, Session] = {}
 
 ANSWER_CONCURRENCY = int(os.getenv("ANSWER_CONCURRENCY", "10"))
 
+# Dedicated executor for fire-and-forget DB saves — lives outside answer engine
+# so its shutdown doesn't block session.processing = False
+_db_save_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="db-save")
+
 
 def get_session(session_id: str) -> Session:
     session = sessions.get(session_id)
@@ -477,7 +481,7 @@ def run_answer_engine(session_id: str):
                     session.answers[question.id] = answer
                     if answer.needs_review:
                         needs_review_count += 1
-                    executor.submit(database.save_answer, session_id, answer)
+                    _db_save_executor.submit(database.save_answer, session_id, answer)
                 except Exception as e:
                     error_count += 1
                     logger.error("answer_generation_failed", extra={
@@ -548,12 +552,26 @@ async def stream_answers(session_id: str):
 
     async def event_generator():
         seen: set = set()
+        # Wait up to 30s for processing to actually start before giving up
+        waited = 0.0
+        while not session.processing and session.total_questions == 0:
+            await asyncio.sleep(0.5)
+            waited += 0.5
+            if waited >= 30:
+                yield "data: [DONE]\n\n"
+                return
+
         while True:
-            for qid, answer in list(session.answers.items()):
+            # Snapshot the dict to avoid RuntimeError on concurrent resize
+            try:
+                snapshot = dict(session.answers)
+            except RuntimeError:
+                snapshot = {}
+            for qid, answer in snapshot.items():
                 if qid not in seen:
                     seen.add(qid)
                     yield f"data: {json.dumps(answer.model_dump())}\n\n"
-            if not session.processing and len(seen) >= session.total_questions and session.total_questions > 0:
+            if not session.processing and session.total_questions > 0 and len(seen) >= session.total_questions:
                 yield "data: [DONE]\n\n"
                 break
             await asyncio.sleep(0.3)
