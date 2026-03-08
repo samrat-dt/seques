@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import List
 
@@ -35,8 +36,10 @@ NEEDS_REVIEW_KEYWORDS = [
     "patch within",
 ]
 
-DOC_CHAR_LIMIT = 40_000
-TOTAL_CHAR_BUDGET = 96_000
+# Groq free tier: 12k TPM. Budget = 12k - max_tokens(2048) - prompt overhead(~550) ≈ 9,400 tokens ≈ 37,600 chars.
+# Set conservatively at 32k to leave headroom. Override via env for paid tiers.
+TOTAL_CHAR_BUDGET = int(os.getenv("DOC_CHAR_BUDGET", "32000"))
+DOC_CHAR_LIMIT = int(os.getenv("DOC_CHAR_LIMIT", "16000"))
 
 
 def build_doc_context(docs: List[ComplianceDoc]) -> str:

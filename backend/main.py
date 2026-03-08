@@ -79,6 +79,16 @@ app.add_middleware(
 )
 
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch-all: ensures unhandled exceptions return JSON with CORS headers applied."""
+    logger.error("unhandled_exception", extra={"path": request.url.path, "error": str(exc)})
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {exc}"},
+    )
+
+
 # ---------------------------------------------------------------------------
 # In-memory session store (Phase 1 — Supabase persistence in Phase 2)
 # ---------------------------------------------------------------------------
@@ -102,11 +112,14 @@ class Session:
 
 sessions: Dict[str, Session] = {}
 
-_CONCURRENCY_RAW = int(os.getenv("ANSWER_CONCURRENCY", "10"))
+_CONCURRENCY_RAW = int(os.getenv("ANSWER_CONCURRENCY", "1"))
 ANSWER_CONCURRENCY = min(_CONCURRENCY_RAW, 20)
 if _CONCURRENCY_RAW > 20:
     import warnings
     warnings.warn(f"ANSWER_CONCURRENCY={_CONCURRENCY_RAW} exceeds max of 20; clamped to 20.")
+
+# Delay between questions to stay well under TPM limits (seconds)
+QUESTION_DELAY_S = float(os.getenv("QUESTION_DELAY_S", "1.5"))
 
 # Dedicated executor for fire-and-forget DB saves — lives outside answer engine
 # so its shutdown doesn't block session.processing = False
@@ -516,6 +529,8 @@ def run_answer_engine(session_id: str):
                     )
                 finally:
                     session.processed_count += 1
+                    if QUESTION_DELAY_S > 0:
+                        time.sleep(QUESTION_DELAY_S)
     finally:
         session.processing = False
         duration_ms = int((time.time() - (session.processing_started_at or time.time())) * 1000)
