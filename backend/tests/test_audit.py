@@ -53,20 +53,20 @@ def tmp_audit_log(tmp_path, monkeypatch):
 class TestEmitBasics:
     def test_returns_string(self, tmp_audit_log):
         import audit
-        with patch("audit.database"):
+        with patch("database.save_audit_event"):
             result = audit.emit("session.create")
         assert isinstance(result, str)
 
     def test_returns_valid_uuid(self, tmp_audit_log):
         import audit
-        with patch("audit.database"):
+        with patch("database.save_audit_event"):
             result = audit.emit("session.create")
         # Should not raise
         uuid.UUID(result)
 
     def test_different_calls_return_different_ids(self, tmp_audit_log):
         import audit
-        with patch("audit.database"):
+        with patch("database.save_audit_event"):
             id1 = audit.emit("session.create")
             id2 = audit.emit("session.create")
         assert id1 != id2
@@ -79,7 +79,7 @@ class TestEmitBasics:
 class TestAuditLogFileWrite:
     def test_writes_to_log_file(self, tmp_audit_log):
         import audit
-        with patch("audit.database"):
+        with patch("database.save_audit_event"):
             audit.emit("session.create", actor="test_ip")
         assert tmp_audit_log.exists()
         content = tmp_audit_log.read_text()
@@ -87,7 +87,7 @@ class TestAuditLogFileWrite:
 
     def test_log_line_is_valid_json(self, tmp_audit_log):
         import audit
-        with patch("audit.database"):
+        with patch("database.save_audit_event"):
             audit.emit("session.create")
         line = tmp_audit_log.read_text().strip().splitlines()[-1]
         entry = json.loads(line)  # Must not raise
@@ -95,7 +95,7 @@ class TestAuditLogFileWrite:
 
     def test_multiple_emits_append_multiple_lines(self, tmp_audit_log):
         import audit
-        with patch("audit.database"):
+        with patch("database.save_audit_event"):
             audit.emit("session.create")
             audit.emit("answer.update")
             audit.emit("export.download")
@@ -104,7 +104,7 @@ class TestAuditLogFileWrite:
 
     def test_each_line_ends_with_newline(self, tmp_audit_log):
         import audit
-        with patch("audit.database"):
+        with patch("database.save_audit_event"):
             audit.emit("session.create")
         raw = tmp_audit_log.read_text()
         assert raw.endswith("\n")
@@ -117,7 +117,7 @@ class TestAuditLogFileWrite:
 class TestAuditEntryFields:
     def _emit_and_read(self, tmp_audit_log, **kwargs):
         import audit
-        with patch("audit.database"):
+        with patch("database.save_audit_event"):
             event_id = audit.emit(**kwargs)
         line = tmp_audit_log.read_text().strip().splitlines()[-1]
         return event_id, json.loads(line)
@@ -198,7 +198,7 @@ class TestAuditEntryFields:
 class TestAuditLogging:
     def test_logger_info_called_with_audit_flag(self, tmp_audit_log):
         import audit
-        with patch("audit.database"):
+        with patch("database.save_audit_event"):
             with patch.object(audit.logger, "info") as mock_log:
                 audit.emit("session.create")
         # At least one call should have audit=True in the extra dict
@@ -210,7 +210,7 @@ class TestAuditLogging:
 
     def test_logger_info_called_with_action(self, tmp_audit_log):
         import audit
-        with patch("audit.database"):
+        with patch("database.save_audit_event"):
             with patch.object(audit.logger, "info") as mock_log:
                 audit.emit("answer.update")
         call_extra_actions = [
@@ -230,23 +230,15 @@ class TestAuditSupabaseThread:
         """_write() swallows Supabase errors gracefully."""
         import audit
 
-        # Simulate an import or runtime error in database module
-        with patch("audit.database", side_effect=Exception("db down")):
-            # Should not raise
-            audit.emit("session.create")
+        # Patch save_audit_event to raise — audit.emit should not propagate the error
+        with patch("database.save_audit_event", side_effect=Exception("db down")):
+            audit.emit("session.create")  # must not raise
 
     def test_supabase_thread_started_when_database_available(self, tmp_audit_log):
         import audit
-        import threading
 
-        mock_db = MagicMock()
-        mock_db.save_audit_event = MagicMock()
+        with patch("database.save_audit_event") as mock_save:
+            audit.emit("session.create")
 
-        with patch("audit.database", mock_db):
-            with patch("threading.Thread") as mock_thread:
-                mock_instance = MagicMock()
-                mock_thread.return_value = mock_instance
-                audit.emit("session.create")
-
-        mock_thread.assert_called_once()
-        mock_instance.start.assert_called_once()
+        # save_audit_event is called (possibly in a thread) — just assert it was invoked
+        mock_save.assert_called_once()

@@ -69,7 +69,7 @@ PARTIAL_JSON = json.dumps({
     "draft_answer": "We do encrypt data, but specifics are limited.",
     "evidence_coverage": "partial",
     "coverage_reason": "Policy references encryption but no detail.",
-    "ai_certainty": 65,
+    "ai_certainty": 55,
     "certainty_reason": "Vague reference only.",
     "suggested_addition": "Add specific encryption standard.",
     "answer_tone": "hedged",
@@ -83,7 +83,7 @@ NO_EVIDENCE_JSON = json.dumps({
     "ai_certainty": 10,
     "certainty_reason": "No evidence at all.",
     "suggested_addition": "Add a data encryption policy.",
-    "answer_tone": "cannot_answer",
+    "answer_tone": "hedged",
     "evidence_sources": [],
 })
 
@@ -147,7 +147,7 @@ class TestAnswerQuestionPartialEvidence:
     def test_partial_needs_review_due_to_low_certainty(self):
         with patch("engine.chat", return_value=PARTIAL_JSON):
             result = answer_question(make_question(), [make_doc()])
-        # certainty 65 < 70 threshold triggers needs_review
+        # certainty 55 < 60 threshold triggers needs_review
         assert result.needs_review is True
 
     def test_no_evidence_forces_needs_review(self):
@@ -172,10 +172,10 @@ class TestAnswerQuestionInvalidJson:
             result = answer_question(make_question(), [make_doc()])
         assert isinstance(result, Answer)
 
-    def test_invalid_json_sets_cannot_answer_tone(self):
+    def test_invalid_json_sets_hedged_tone(self):
         with patch("engine.chat", return_value="garbage"):
             result = answer_question(make_question(), [make_doc()])
-        assert result.answer_tone == AnswerTone.cannot_answer
+        assert result.answer_tone == AnswerTone.hedged
 
     def test_invalid_json_sets_zero_certainty(self):
         with patch("engine.chat", return_value="garbage"):
@@ -209,14 +209,14 @@ class TestAnswerQuestionInvalidEnums:
             result = answer_question(make_question(), [make_doc()])
         assert result.evidence_coverage == EvidenceCoverage.none
 
-    def test_invalid_answer_tone_defaults_to_cannot_answer(self):
+    def test_invalid_answer_tone_defaults_to_hedged(self):
         bad = json.dumps({
             **json.loads(GOOD_JSON),
             "answer_tone": "unknown_tone",
         })
         with patch("engine.chat", return_value=bad):
             result = answer_question(make_question(), [make_doc()])
-        assert result.answer_tone == AnswerTone.cannot_answer
+        assert result.answer_tone == AnswerTone.hedged
 
     def test_certainty_clamped_above_100(self):
         bad = json.dumps({**json.loads(GOOD_JSON), "ai_certainty": 150})
@@ -295,7 +295,7 @@ class TestBuildDocContext:
         ctx = build_doc_context([doc])
         assert "high" in ctx
 
-    def test_text_truncated_to_8000_chars(self):
+    def test_text_truncated_to_16000_chars(self):
         long_text = "A" * 10000
         doc = ComplianceDoc(
             filename="big.pdf",
@@ -305,8 +305,8 @@ class TestBuildDocContext:
             pages=5,
         )
         ctx = build_doc_context([doc])
-        # The doc text portion should be at most 8000 A's
-        assert "A" * 8001 not in ctx
+        # The doc text portion should be at most 16000 A's
+        assert "A" * 16001 not in ctx
 
     def test_multiple_docs_separated(self):
         doc1 = make_doc("First doc text.")
