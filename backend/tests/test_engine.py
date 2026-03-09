@@ -17,12 +17,12 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-import pytest
+import os
+import sys
 
-import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models import (
+from models import (  # noqa: E402
     Answer,
     AnswerFormat,
     AnswerStatus,
@@ -33,7 +33,7 @@ from models import (
     Question,
     TrustLevel,
 )
-from engine import answer_question, build_doc_context, check_needs_review
+from engine import answer_question, build_doc_context, check_needs_review  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

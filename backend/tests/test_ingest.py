@@ -16,11 +16,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import sys, os
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models import ComplianceDoc, DocType, TrustLevel
-from ingest import detect_doc_type, extract_pdf_text, ingest_manual, ingest_pdf
+from models import ComplianceDoc, DocType, TrustLevel  # noqa: E402
+from ingest import detect_doc_type, extract_pdf_text, ingest_manual, ingest_pdf  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

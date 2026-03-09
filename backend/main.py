@@ -21,25 +21,25 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import jwt as pyjwt
+import jwt as pyjwt  # noqa: E402
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
-from security import RateLimitMiddleware, SecurityHeadersMiddleware
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import JSONResponse, StreamingResponse  # noqa: E402
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
+from security import RateLimitMiddleware, SecurityHeadersMiddleware  # noqa: E402
 
-import analytics
-import audit
-import database
-from engine import answer_question, build_doc_context
-from export import export_excel, export_pdf
-from ingest import ingest_docx, ingest_manual, ingest_pdf
-from llm import PROVIDER_KEYS, PROVIDER_MODELS
-from models import Answer, AnswerStatus, AnswerTone, EvidenceCoverage
-from observability import logger
-from parser import parse_excel_questionnaire, parse_pdf_questionnaire, parse_text_questionnaire
+import analytics  # noqa: E402
+import audit  # noqa: E402
+import database  # noqa: E402
+from engine import answer_question, build_doc_context  # noqa: E402
+from export import export_excel, export_pdf  # noqa: E402
+from ingest import ingest_docx, ingest_manual, ingest_pdf  # noqa: E402
+from llm import PROVIDER_KEYS, PROVIDER_MODELS  # noqa: E402
+from models import Answer, AnswerStatus, AnswerTone, EvidenceCoverage  # noqa: E402
+from observability import logger  # noqa: E402
+from parser import parse_excel_questionnaire, parse_pdf_questionnaire, parse_text_questionnaire  # noqa: E402
 # TODO: re-enable after fixing middleware exception handling
 # from observability import RequestTracingMiddleware
 # from security import RateLimitMiddleware, SecurityHeadersMiddleware
@@ -620,6 +620,7 @@ def run_answer_engine(session_id: str):
                     session.answers[question.id] = answer
                     if answer.needs_review:
                         needs_review_count += 1
+
                     def _on_save_done(fut, qid=question.id):
                         exc = fut.exception()
                         if exc:

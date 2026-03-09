@@ -16,10 +16,8 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import uuid
-from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import patch
 
 import pytest
 
@@ -99,7 +97,7 @@ class TestAuditLogFileWrite:
             audit.emit("session.create")
             audit.emit("answer.update")
             audit.emit("export.download")
-        lines = [l for l in tmp_audit_log.read_text().strip().splitlines() if l.strip()]
+        lines = [line for line in tmp_audit_log.read_text().strip().splitlines() if line.strip()]
         assert len(lines) >= 3
 
     def test_each_line_ends_with_newline(self, tmp_audit_log):
