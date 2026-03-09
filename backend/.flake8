@@ -1,0 +1,22 @@
+[flake8]
+max-line-length = 88
+extend-ignore =
+    # E402: module-level import not at top — necessary in main.py (load_dotenv before imports)
+    # and test files (env vars must be set before importing app modules)
+    E402,
+    # E501: line too long — handled by max-line-length above
+    E501,
+    # E401: multiple imports on one line — used in test files for brevity
+    E401,
+    # E306: expected blank line before nested definition — minor style issue
+    E306,
+    # F401: imported but unused — some imports are used conditionally or re-exported
+    F401,
+    # F841: local variable assigned but never used — used in exception handlers
+    F841,
+    # E741: ambiguous variable name — pre-existing
+    E741
+exclude =
+    .venv,
+    __pycache__,
+    migrations
