@@ -178,7 +178,7 @@ def chat(system: str, user: str, max_tokens: int = 1024, provider: str | None = 
         tried.add(current_key)
         try:
             return _do_chat(system, user, max_tokens, provider, groq_key=current_key)
-        except Exception:
+        except Exception as e:
             if _is_tpd_error(e):
                 # Daily limit — blacklist this key permanently for today
                 _mark_exhausted(current_key)

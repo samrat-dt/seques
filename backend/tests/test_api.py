@@ -30,6 +30,7 @@ import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -41,8 +42,6 @@ os.environ["SUPABASE_JWT_SECRET"] = ""  # disable auth in tests
 os.environ["MIXPANEL_TOKEN"] = ""
 os.environ["AUDIT_LOG_PATH"] = "/tmp/test_audit_api.log"
 os.environ["RATE_LIMIT_PER_MINUTE"] = "10000"  # disable effective rate limiting in tests
-
-from fastapi.testclient import TestClient
 
 
 # ---------------------------------------------------------------------------
