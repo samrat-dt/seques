@@ -66,6 +66,7 @@ def save_session(session) -> None:
             "questionnaire_filename": session.questionnaire_filename,
             "total_questions": session.total_questions,
             "processing": session.processing,
+            "user_id": getattr(session, "user_id", None),
         }).execute(),
         "save_session",
     )

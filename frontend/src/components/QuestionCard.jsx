@@ -93,6 +93,14 @@ export default function QuestionCard({ question, answer, onUpdate }) {
               Edit
             </button>
           )}
+          {answer.status === 'approved' && !editing && (
+            <button
+              onClick={() => onUpdate({ status: 'edited' })}
+              className="text-xs text-muted hover:text-primary px-3 py-1 rounded-lg hover:bg-raised transition-all"
+            >
+              Un-approve
+            </button>
+          )}
           {answer.status !== 'approved' && !editing && (
             <button
               onClick={handleApprove}

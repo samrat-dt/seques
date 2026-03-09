@@ -80,4 +80,8 @@ The goal: a tool that handles enterprise-grade questionnaire loads — 100+ ques
 
 ---
 
-*Seques is an AI-powered security questionnaire co-pilot. Vendors upload their compliance docs and a prospect's questionnaire. The AI drafts every answer. Teams review, edit, and export. We're in early access — [reach out](https://seques.ai) if you're spending hours filling out security questionnaires manually.*
+*Seques is an AI-powered security questionnaire co-pilot. Vendors upload their compliance docs and a prospect's questionnaire. The AI drafts every answer. Teams review, edit, and export. We're in early access — [reach out](mailto:access@seques.ai) if you're spending hours filling out security questionnaires manually.*
+
+---
+
+**Update — 2026-03-09:** This post describes the parallel architecture and the 6-8× speedup. One correction: the shipped default is `ANSWER_CONCURRENCY=1` (sequential), not `ANSWER_CONCURRENCY=10`. During Phase 1 load testing, parallel execution at concurrency=10 produced unpredictable answer ordering under Groq rate limits. The parallel code path is in the codebase and activated by setting `ANSWER_CONCURRENCY > 1` in `.env`. Sequential is the reliability default until Phase 2 adds async LLM clients and a Redis-backed rate-limit tracker. The 6-8× speedup is real in ideal conditions — it's just not the default runtime behaviour today.

@@ -1,7 +1,15 @@
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
+let _authToken = null
+
+export function setAuthToken(token) {
+  _authToken = token
+}
+
 async function request(path, options = {}) {
-  const res = await fetch(`${BASE}${path}`, options)
+  const headers = { ...options.headers }
+  if (_authToken) headers['Authorization'] = `Bearer ${_authToken}`
+  const res = await fetch(`${BASE}${path}`, { ...options, headers })
   if (!res.ok) {
     let detail = res.statusText
     try {

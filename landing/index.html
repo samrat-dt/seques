@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Seques — AI-powered security questionnaire co-pilot</title>
+  <meta name="description" content="AI drafts every answer to security questionnaires. You review and ship. Seques is a co-pilot for vendor security teams." />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --base: #0d0f12;
+      --surface: #141720;
+      --raised: #1c1f2b;
+      --overlay: #232838;
+      --border: #2a2f42;
+      --mid: #3a4060;
+      --muted: #6b7280;
+      --secondary: #9ca3af;
+      --primary: #f1f5f9;
+      --accent: #fbbf24;
+      --accent-dim: rgba(251, 191, 36, 0.12);
+      --success: #34d399;
+      --success-bg: rgba(52, 211, 153, 0.08);
+      --success-border: rgba(52, 211, 153, 0.2);
+      --info: #60a5fa;
+      --info-bg: rgba(96, 165, 250, 0.08);
+      --info-border: rgba(96, 165, 250, 0.2);
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--base);
+      color: var(--primary);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: inherit; text-decoration: none; }
+
+    /* Layout */
+    .container {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* Nav */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      height: 52px;
+      background: rgba(13, 15, 18, 0.95);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+    }
+
+    nav .container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+    }
+
+    .wordmark {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      color: var(--primary);
+    }
+
+    .wordmark span {
+      display: inline-block;
+      width: 6px;
+      height: 2px;
+      background: var(--accent);
+      vertical-align: middle;
+      margin-left: 1px;
+      border-radius: 1px;
+    }
+
+    .nav-cta {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--base);
+      background: var(--accent);
+      padding: 6px 14px;
+      border-radius: 8px;
+      transition: background 0.15s;
+    }
+    .nav-cta:hover { background: #fcd34d; }
+
+    /* Hero */
+    .hero {
+      padding: 80px 0 60px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .version-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      color: var(--accent);
+      background: var(--accent-dim);
+      border: 1px solid rgba(251, 191, 36, 0.25);
+      padding: 4px 10px;
+      border-radius: 999px;
+      margin-bottom: 28px;
+      letter-spacing: 0.02em;
+    }
+
+    .hero h1 {
+      font-size: clamp(36px, 6vw, 52px);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      line-height: 1.15;
+      color: var(--primary);
+      margin-bottom: 20px;
+    }
+
+    .hero h1 em {
+      font-style: normal;
+      color: var(--accent);
+    }
+
+    .hero .pitch {
+      font-size: 19px;
+      color: var(--secondary);
+      line-height: 1.55;
+      max-width: 560px;
+      margin-bottom: 36px;
+    }
+
+    .cta-group {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--base);
+      background: var(--accent);
+      padding: 12px 24px;
+      border-radius: 10px;
+      transition: background 0.15s, transform 0.1s;
+    }
+    .btn-primary:hover { background: #fcd34d; transform: translateY(-1px); }
+
+    .btn-ghost {
+      font-size: 14px;
+      color: var(--muted);
+      padding: 12px 4px;
+      transition: color 0.15s;
+    }
+    .btn-ghost:hover { color: var(--primary); }
+
+    /* Release highlights */
+    .release-strip {
+      margin-top: 52px;
+      padding-top: 28px;
+      border-top: 1px solid var(--border);
+    }
+
+    .release-label {
+      font-size: 11px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 16px;
+    }
+
+    .release-items {
+      display: grid;
+      gap: 10px;
+    }
+
+    .release-item {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      font-size: 14px;
+      color: var(--secondary);
+    }
+
+    .release-item::before {
+      content: '✓';
+      color: var(--success);
+      flex-shrink: 0;
+      font-size: 12px;
+      margin-top: 1px;
+    }
+
+    .release-item strong {
+      color: var(--primary);
+      font-weight: 500;
+    }
+
+    /* Sections */
+    section {
+      padding: 64px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .section-label {
+      font-size: 11px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    section h2 {
+      font-size: 26px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--primary);
+      margin-bottom: 8px;
+      line-height: 1.3;
+    }
+
+    section .section-sub {
+      font-size: 15px;
+      color: var(--muted);
+      margin-bottom: 32px;
+      line-height: 1.5;
+    }
+
+    .bullet-list {
+      display: grid;
+      gap: 20px;
+    }
+
+    .bullet {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+    }
+
+    .bullet-icon {
+      flex-shrink: 0;
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      margin-top: 1px;
+    }
+
+    .bullet-icon.state { background: var(--success-bg); border: 1px solid var(--success-border); color: var(--success); }
+    .bullet-icon.future { background: var(--info-bg); border: 1px solid var(--info-border); color: var(--info); }
+
+    .bullet-content h3 {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--primary);
+      margin-bottom: 3px;
+    }
+
+    .bullet-content p {
+      font-size: 14px;
+      color: var(--secondary);
+      line-height: 1.55;
+    }
+
+    .bullet-content p em {
+      color: var(--muted);
+      font-style: normal;
+    }
+
+    /* CTA section */
+    .cta-section {
+      padding: 80px 0 100px;
+      text-align: center;
+      border-bottom: none;
+    }
+
+    .cta-section h2 {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      color: var(--primary);
+      margin-bottom: 12px;
+    }
+
+    .cta-section p {
+      font-size: 16px;
+      color: var(--secondary);
+      margin-bottom: 36px;
+      max-width: 440px;
+      margin-left: auto;
+      margin-right: auto;
+      line-height: 1.55;
+    }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 28px 0;
+    }
+
+    footer .container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    footer p {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    footer nav a {
+      font-size: 13px;
+      color: var(--muted);
+      transition: color 0.15s;
+      display: inline;
+      border: none;
+      height: auto;
+      background: none;
+    }
+    footer nav a:hover { color: var(--secondary); }
+
+    /* Responsive */
+    @media (max-width: 600px) {
+      .hero { padding: 56px 0 44px; }
+      .cta-group { flex-direction: column; align-items: flex-start; }
+      .cta-section h2 { font-size: 26px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Nav -->
+  <nav>
+    <div class="container">
+      <div class="wordmark">seques<span></span></div>
+      <a class="nav-cta" href="mailto:access@seques.ai">Request access →</a>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <div class="hero">
+    <div class="container">
+      <div class="version-badge">v0.3.0 — Phase 1 complete</div>
+      <h1>AI drafts every answer to<br /><em>security questionnaires.</em><br />You review and ship.</h1>
+      <p class="pitch">
+        Upload your SOC 2, ISO 27001, or policy docs. Add the prospect's questionnaire.
+        Seques reads the evidence and drafts every answer — in under 30 seconds.
+        You edit, approve, and export. No blank fields.
+      </p>
+      <div class="cta-group">
+        <a class="btn-primary" href="mailto:access@seques.ai">Request access →</a>
+        <a class="btn-ghost" href="#how-it-stands">How it works ↓</a>
+      </div>
+
+      <!-- Release highlights -->
+      <div class="release-strip">
+        <div class="release-label">v0.3.0 release highlights</div>
+        <div class="release-items">
+          <div class="release-item">
+            <strong>6-8× faster processing</strong> — parallel LLM calls via ThreadPoolExecutor cut a 30-question run from ~120s to ~15-20s.
+          </div>
+          <div class="release-item">
+            <strong>Streaming answers via SSE</strong> — first answer appears in ~5 seconds; the questionnaire fills progressively in real time.
+          </div>
+          <div class="release-item">
+            <strong>Draft-first generation</strong> — every question gets a usable answer draft, even when your docs don't cover the exact control. No blank fields.
+          </div>
+          <div class="release-item">
+            <strong>5-key Groq pool with TPD-aware rotation</strong> — day-exhausted keys are blacklisted until midnight UTC, keeping processing reliable across long days.
+          </div>
+          <div class="release-item">
+            <strong>Excel, PDF, and DOCX uploads</strong> — paste questions, upload a spreadsheet, or drop a PDF or Word doc. Export the filled questionnaire as Excel or PDF.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Where we stand today -->
+  <section id="how-it-stands">
+    <div class="container">
+      <div class="section-label">Honest state of things</div>
+      <h2>Where we are today</h2>
+      <p class="section-sub">
+        Phase 1 is complete and running. Here are the decisions we made and the trade-offs we accepted.
+      </p>
+      <div class="bullet-list">
+        <div class="bullet">
+          <div class="bullet-icon state">→</div>
+          <div class="bullet-content">
+            <h3>We chose reliability over raw speed at beta scale</h3>
+            <p>
+              Parallel processing at concurrency=10 was 6-8× faster but produced unpredictable answer ordering under Groq rate limits.
+              We shipped with <code>ANSWER_CONCURRENCY=1</code> by default — sequential, predictable, every question answered.
+              <em>Speed is a Phase 2 optimisation after async LLM clients and a Redis rate-limit tracker are in place.</em>
+            </p>
+          </div>
+        </div>
+        <div class="bullet">
+          <div class="bullet-icon state">→</div>
+          <div class="bullet-content">
+            <h3>Draft-first answers mean you always get something to work with</h3>
+            <p>
+              The engine doesn't say "I can't answer this." It produces a professional draft for every question — assertive when docs support it, hedged when they don't.
+              Hedged answers include a note on what to verify.
+              <em>Trade-off: hedged answers need your review before sending to the prospect.</em>
+            </p>
+          </div>
+        </div>
+        <div class="bullet">
+          <div class="bullet-icon state">→</div>
+          <div class="bullet-content">
+            <h3>We ingest up to 32KB of your compliance docs per request</h3>
+            <p>
+              That covers most SOC 2 summaries and policy docs. Long-form reports (100KB+) get truncated.
+              <em>Phase 2 adds RAG with vector search — the engine will retrieve only the relevant sections per question, not the whole document.</em>
+            </p>
+          </div>
+        </div>
+        <div class="bullet">
+          <div class="bullet-icon state">→</div>
+          <div class="bullet-content">
+            <h3>Sessions are in-memory — no auth, no persistence across restarts</h3>
+            <p>
+              Supabase schema is ready and the CRUD layer is scaffolded. We chose not to wire it in Phase 1 because the in-memory store was fast to ship and the beta audience is small.
+              <em>A server restart clears sessions. Phase 2 persistence and auth changes this.</em>
+            </p>
+          </div>
+        </div>
+        <div class="bullet">
+          <div class="bullet-icon state">→</div>
+          <div class="bullet-content">
+            <h3>Three LLM providers available; Groq is default</h3>
+            <p>
+              The engine supports Groq (default), Anthropic, and Google via a single <code>LLM_PROVIDER</code> env var switch.
+              Groq is free-tier and fast. Anthropic produces the best structured JSON.
+              <em>No vendor lock-in — swapping takes one env var change and a restart.</em>
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- What's next -->
+  <section>
+    <div class="container">
+      <div class="section-label">Phase 2 roadmap</div>
+      <h2>What's coming next</h2>
+      <p class="section-sub">
+        Auth, persistence, and smarter document handling. In that order.
+      </p>
+      <div class="bullet-list">
+        <div class="bullet">
+          <div class="bullet-icon future">⚡</div>
+          <div class="bullet-content">
+            <h3>Supabase Magic Link auth</h3>
+            <p>
+              Email-based auth with no passwords. You enter your email, get a link, click it, and you're in.
+              Sessions will be scoped to your account with Supabase row-level security — no one else can read your answers.
+              Beta access will be invite-only through this flow.
+            </p>
+          </div>
+        </div>
+        <div class="bullet">
+          <div class="bullet-icon future">⚡</div>
+          <div class="bullet-content">
+            <h3>Full session persistence</h3>
+            <p>
+              Sessions, questions, and answers will be stored in Supabase — surviving server restarts and available across devices.
+              Work on a questionnaire, close the tab, come back a week later. Everything's there.
+            </p>
+          </div>
+        </div>
+        <div class="bullet">
+          <div class="bullet-icon future">⚡</div>
+          <div class="bullet-content">
+            <h3>RAG for large compliance document sets</h3>
+            <p>
+              Vector embeddings for compliance docs, stored in Supabase pgvector.
+              Instead of sending your entire SOC 2 report to the LLM, the engine retrieves the top-k relevant sections per question.
+              Better answers, lower cost, no 32KB ceiling.
+            </p>
+          </div>
+        </div>
+        <div class="bullet">
+          <div class="bullet-icon future">⚡</div>
+          <div class="bullet-content">
+            <h3>Per-user guardrails and multi-tenant isolation</h3>
+            <p>
+              Max active sessions per user, max questions per session, rate limits by user ID (not just IP).
+              RLS policies ensure complete data isolation between teams.
+              Ready for multi-tenant deploy once auth lands.
+            </p>
+          </div>
+        </div>
+        <div class="bullet">
+          <div class="bullet-icon future">⚡</div>
+          <div class="bullet-content">
+            <h3>True parallel processing with async LLM clients</h3>
+            <p>
+              Phase 2 revisits the concurrency design with async LLM clients and a Redis-backed rate-limit budget tracker.
+              At <code>ANSWER_CONCURRENCY=10</code> with async safety, the 15-20s wall time becomes the default — not the exception.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta-section">
+    <div class="container">
+      <h2>Ready to stop filling out questionnaires by hand?</h2>
+      <p>
+        Seques is in early access. Drop us an email and we'll add you to the list.
+        No commitments — just come try it.
+      </p>
+      <a class="btn-primary" href="mailto:access@seques.ai" style="display:inline-flex;">
+        Request access →
+      </a>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="container">
+      <p>© 2026 Seques. Built for security teams who have better things to do.</p>
+      <nav style="display:flex;gap:20px;">
+        <a href="mailto:access@seques.ai">Contact</a>
+      </nav>
+    </div>
+  </footer>
+
+</body>
+</html>

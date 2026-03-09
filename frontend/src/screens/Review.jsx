@@ -3,10 +3,10 @@ import { updateAnswer } from '../api'
 import QuestionCard from '../components/QuestionCard'
 
 const EMPTY_STATES = {
-  all:    'Nothing to review. Something\'s off.',
-  ready:  'No ready answers yet — might need more docs.',
-  review: 'No flagged answers. You\'re in good shape.',
-  gaps:   'No gaps found. Either your docs are thorough or the questions were easy.',
+  all:      'Nothing to review. Something\'s off.',
+  answered: 'No answered questions yet — might need more docs.',
+  flagged:  'No flagged answers. You\'re in good shape.',
+  gaps:     'No gaps found. Either your docs are thorough or the questions were easy.',
 }
 
 export default function Review({ sessionId, questions, answers, onAnswerUpdate, onExport }) {
@@ -16,8 +16,8 @@ export default function Review({ sessionId, questions, answers, onAnswerUpdate, 
 
   const counts = {
     total:    questions.length,
-    ready:    answerList.filter((a) => !a.needs_review && a.evidence_coverage !== 'none').length,
-    review:   answerList.filter((a) => a.needs_review).length,
+    answered: answerList.filter((a) => !a.needs_review && a.evidence_coverage !== 'none').length,
+    flagged:  answerList.filter((a) => a.needs_review).length,
     gaps:     answerList.filter((a) => a.evidence_coverage === 'none').length,
     approved: answerList.filter((a) => a.status === 'approved').length,
   }
@@ -25,17 +25,17 @@ export default function Review({ sessionId, questions, answers, onAnswerUpdate, 
   const filtered = questions.filter((q) => {
     const a = answers[q.id]
     if (!a) return false
-    if (filter === 'ready')  return !a.needs_review && a.evidence_coverage !== 'none'
-    if (filter === 'review') return a.needs_review
-    if (filter === 'gaps')   return a.evidence_coverage === 'none'
+    if (filter === 'answered') return !a.needs_review && a.evidence_coverage !== 'none'
+    if (filter === 'flagged')  return a.needs_review
+    if (filter === 'gaps')     return a.evidence_coverage === 'none'
     return true
   })
 
   const tabs = [
-    { key: 'all',    label: 'All',    count: counts.total },
-    { key: 'ready',  label: 'Ready',  count: counts.ready },
-    { key: 'review', label: 'Review', count: counts.review },
-    { key: 'gaps',   label: 'Gaps',   count: counts.gaps },
+    { key: 'all',      label: 'All',      count: counts.total },
+    { key: 'answered', label: 'Answered', count: counts.answered },
+    { key: 'flagged',  label: 'Flagged',  count: counts.flagged },
+    { key: 'gaps',     label: 'Gaps',     count: counts.gaps },
   ]
 
   async function handleUpdate(questionId, fields) {
@@ -52,9 +52,9 @@ export default function Review({ sessionId, questions, answers, onAnswerUpdate, 
           <p className="text-secondary text-sm mt-1.5">
             {counts.total} questions
             <span className="mx-2 text-muted">·</span>
-            <span className="text-success-text">{counts.ready} ready</span>
+            <span className="text-success-text">{counts.answered} answered</span>
             <span className="mx-2 text-muted">·</span>
-            <span className="text-warning-text">{counts.review} need a look</span>
+            <span className="text-warning-text">{counts.flagged} flagged</span>
             <span className="mx-2 text-muted">·</span>
             <span className="text-danger-text">{counts.gaps} gaps</span>
           </p>

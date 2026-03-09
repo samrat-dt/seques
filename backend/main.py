@@ -21,10 +21,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
+import jwt as pyjwt
+
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+from security import RateLimitMiddleware, SecurityHeadersMiddleware
 
 import analytics
 import audit
@@ -66,10 +70,11 @@ app = FastAPI(
     ],
 )
 
-# TODO (open issue): restore SecurityHeadersMiddleware, RateLimitMiddleware, RequestTracingMiddleware
-# Temporarily disabled — custom middleware was intercepting exceptions before CORS headers
-# could be applied, causing ERR_FAILED on all API calls from the frontend.
-# Tracked in: agents/security/agent.md + agents/shared/decisions.md
+# Middleware order: last added = outermost (processes all requests first, all responses last).
+# CORS must be outermost so it adds headers to every response — including rate-limit rejections.
+# RateLimitMiddleware returns JSONResponse directly (never raises) to stay compatible.
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -98,6 +103,7 @@ class Session:
         self.id = session_id
         self.provider = provider
         self.client_ip = client_ip
+        self.user_id: Optional[str] = None
         self.docs = []
         self.questions = []
         self.answers: Dict[str, Answer] = {}
@@ -129,11 +135,18 @@ _db_save_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="db-sav
 def get_session(session_id: str) -> Session:
     session = sessions.get(session_id)
     if not session:
-        # Try to restore from Supabase (handles server restarts)
         session = _restore_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     return session
+
+
+def _assert_owns_session(session: Session, user_id: Optional[str]) -> None:
+    """Raises 403 if auth is enabled and the JWT user does not own this session."""
+    if not _AUTH_ENABLED or user_id is None:
+        return
+    if session.user_id and session.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
 
 
 def _restore_session(session_id: str) -> "Session | None":
@@ -189,6 +202,52 @@ def _restore_session(session_id: str) -> "Session | None":
 
 
 # ---------------------------------------------------------------------------
+# Auth helpers
+# ---------------------------------------------------------------------------
+
+_SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
+_AUTH_ENABLED = bool(_SUPABASE_JWT_SECRET)
+
+# Per-user guardrails (configurable via env)
+MAX_SESSIONS_PER_USER = int(os.getenv("MAX_SESSIONS_PER_USER", "3"))
+MAX_QUESTIONS_PER_SESSION = int(os.getenv("MAX_QUESTIONS_PER_SESSION", "100"))
+
+_bearer_scheme = HTTPBearer(auto_error=False)
+
+# Maps user_id → list of session_ids they own (in-memory; resets on restart)
+_user_sessions: Dict[str, List[str]] = {}
+
+
+def verify_token(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
+) -> Optional[str]:
+    """
+    Validates the Supabase JWT and returns the user's sub (user_id).
+
+    If SUPABASE_JWT_SECRET is not configured, auth is disabled and None is
+    returned — all requests are allowed (Phase 1 / local dev behaviour).
+    """
+    if not _AUTH_ENABLED:
+        return None
+
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Authorization header required")
+
+    try:
+        payload = pyjwt.decode(
+            credentials.credentials,
+            _SUPABASE_JWT_SECRET,
+            algorithms=["HS256"],
+            audience="authenticated",
+        )
+        return payload.get("sub")
+    except pyjwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except pyjwt.InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {exc}")
+
+
+# ---------------------------------------------------------------------------
 # Meta routes
 # ---------------------------------------------------------------------------
 
@@ -217,6 +276,37 @@ def list_providers():
 
 
 # ---------------------------------------------------------------------------
+# Auth endpoint
+# ---------------------------------------------------------------------------
+
+class VerifyTokenBody(BaseModel):
+    token: str
+
+
+@app.post("/api/auth/verify", tags=["meta"], summary="Verify a Supabase JWT")
+def auth_verify(body: VerifyTokenBody):
+    """
+    Accepts a Supabase access token (JWT) and returns the decoded user_id.
+    Use this to confirm the frontend token is valid before making further API calls.
+    Returns 401 if auth is not configured (SUPABASE_JWT_SECRET not set).
+    """
+    if not _AUTH_ENABLED:
+        raise HTTPException(status_code=501, detail="Auth is not configured on this server")
+    try:
+        payload = pyjwt.decode(
+            body.token,
+            _SUPABASE_JWT_SECRET,
+            algorithms=["HS256"],
+            audience="authenticated",
+        )
+        return {"user_id": payload.get("sub"), "email": payload.get("email")}
+    except pyjwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except pyjwt.InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {exc}")
+
+
+# ---------------------------------------------------------------------------
 # Sessions
 # ---------------------------------------------------------------------------
 
@@ -230,19 +320,40 @@ class CreateSessionBody(BaseModel):
     summary="Create a new session",
     status_code=201,
 )
-def create_session(body: Optional[CreateSessionBody] = None, request: Request = None):
+def create_session(
+    body: Optional[CreateSessionBody] = None,
+    request: Request = None,
+    user_id: Optional[str] = Depends(verify_token),
+):
     """
     Creates an isolated session. All uploads and answers are scoped to this session.
     Optionally pass `{"provider": "groq"}` body to override the server default.
 
-    **Phase 2**: sessions will be persisted to Supabase.
+    When auth is enabled, sessions are scoped to the authenticated user and capped
+    at MAX_SESSIONS_PER_USER active sessions (default: 3).
     """
+    # Per-user session cap (only when auth is enabled)
+    if user_id and _AUTH_ENABLED:
+        user_session_ids = _user_sessions.get(user_id, [])
+        active = [sid for sid in user_session_ids if sid in sessions]
+        if len(active) >= MAX_SESSIONS_PER_USER:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Session limit reached ({MAX_SESSIONS_PER_USER} active sessions per user). "
+                       "Export or close an existing session before creating a new one.",
+            )
+
     session_id = str(uuid.uuid4())
     provider = (((body.provider if body else None) or os.getenv("LLM_PROVIDER", "anthropic"))).lower()
     ip = request.client.host if request and request.client else "unknown"
-    sessions[session_id] = Session(session_id, provider, client_ip=ip)
+    sess = Session(session_id, provider, client_ip=ip)
+    sess.user_id = user_id
+    sessions[session_id] = sess
 
-    audit.emit("session.create", actor=ip, resource_type="session", resource_id=session_id,
+    if user_id:
+        _user_sessions.setdefault(user_id, []).append(session_id)
+
+    audit.emit("session.create", actor=user_id or ip, resource_type="session", resource_id=session_id,
                detail={"provider": provider})
     analytics.session_created(session_id, provider, ip)
     logger.info("session_created", extra={"session_id": session_id, "provider": provider})
@@ -274,7 +385,7 @@ MAX_DOC_BYTES = 50 * 1024 * 1024  # 50 MB
     tags=["docs"],
     summary="Upload compliance evidence documents (PDF or Word .docx)",
 )
-async def upload_docs(session_id: str, files: List[UploadFile] = File(...), request: Request = None):
+async def upload_docs(session_id: str, files: List[UploadFile] = File(...), request: Request = None, user_id: Optional[str] = Depends(verify_token)):
     """
     Upload one or more compliance documents (SOC 2, ISO 27001, security policies).
     Supported formats: PDF and Word (.docx). Unsupported types are returned in `skipped`.
@@ -283,6 +394,7 @@ async def upload_docs(session_id: str, files: List[UploadFile] = File(...), requ
     **GDPR note**: document text is held in-memory only and never persisted to disk.
     """
     session = get_session(session_id)
+    _assert_owns_session(session, user_id)
     ip = request.client.host if request and request.client else session.client_ip
 
     added = []
@@ -342,9 +454,10 @@ async def upload_docs(session_id: str, files: List[UploadFile] = File(...), requ
     tags=["docs"],
     summary="Add a compliance document as plain text",
 )
-async def upload_manual_doc(session_id: str, text: str = Form(...), request: Request = None):
+async def upload_manual_doc(session_id: str, text: str = Form(...), request: Request = None, user_id: Optional[str] = Depends(verify_token)):
     """Paste raw text (e.g. a policy excerpt) as a compliance evidence source."""
     session = get_session(session_id)
+    _assert_owns_session(session, user_id)
     ip = request.client.host if request and request.client else session.client_ip
     doc = ingest_manual(text)
     session.docs.append(doc)
@@ -407,6 +520,13 @@ async def upload_questionnaire(
 
     else:
         raise HTTPException(status_code=400, detail="Provide a file or pasted text")
+
+    if len(questions) > MAX_QUESTIONS_PER_SESSION:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Questionnaire has {len(questions)} questions; maximum is {MAX_QUESTIONS_PER_SESSION}. "
+                   "Split the questionnaire into smaller batches.",
+        )
 
     session.questions = questions
     session.total_questions = len(questions)
@@ -555,9 +675,10 @@ def run_answer_engine(session_id: str):
     tags=["answers"],
     summary="Poll processing progress",
 )
-def get_status(session_id: str):
+def get_status(session_id: str, user_id: Optional[str] = Depends(verify_token)):
     """Returns current processing state. Poll until `processing: false`."""
     session = get_session(session_id)
+    _assert_owns_session(session, user_id)
     return {
         "processing": session.processing,
         "processed": session.processed_count,
@@ -570,12 +691,13 @@ def get_status(session_id: str):
     tags=["answers"],
     summary="Stream answers via Server-Sent Events as they complete",
 )
-async def stream_answers(session_id: str):
+async def stream_answers(session_id: str, user_id: Optional[str] = Depends(verify_token)):
     """
     Server-Sent Events endpoint. Emits each answer as JSON as it completes during processing.
     Sends `data: [DONE]` when all answers are ready.
     """
     session = get_session(session_id)
+    _assert_owns_session(session, user_id)
 
     async def event_generator():
         seen: set = set()
@@ -615,9 +737,10 @@ async def stream_answers(session_id: str):
     tags=["answers"],
     summary="Get all questions and AI-generated answers",
 )
-def get_answers(session_id: str):
+def get_answers(session_id: str, user_id: Optional[str] = Depends(verify_token)):
     """Returns the full question list with their draft answers, coverage scores, and review flags."""
     session = get_session(session_id)
+    _assert_owns_session(session, user_id)
     return {
         "questions": [q.model_dump() for q in session.questions],
         "answers": {k: v.model_dump() for k, v in session.answers.items()},
@@ -629,7 +752,7 @@ def get_answers(session_id: str):
     tags=["answers"],
     summary="Edit or approve an answer",
 )
-def update_answer(session_id: str, question_id: str, update: dict, request: Request = None):
+def update_answer(session_id: str, question_id: str, update: dict, request: Request = None, user_id: Optional[str] = Depends(verify_token)):
     """
     Accepts `draft_answer` (string) and/or `status` (draft | edited | approved).
     Editing a draft answer automatically transitions status to `edited`.
@@ -675,9 +798,10 @@ def update_answer(session_id: str, question_id: str, update: dict, request: Requ
     tags=["export"],
     summary="Download filled questionnaire as Excel",
 )
-def download_excel(session_id: str, request: Request = None):
+def download_excel(session_id: str, request: Request = None, user_id: Optional[str] = Depends(verify_token)):
     """Returns an .xlsx file with all questions and approved/edited answers."""
     session = get_session(session_id)
+    _assert_owns_session(session, user_id)
     data = export_excel(session.questions, session.answers)
     analytics.export_downloaded(session_id, "excel", len(session.questions))
     audit.emit("export.download", resource_type="session", resource_id=session_id,
@@ -694,9 +818,10 @@ def download_excel(session_id: str, request: Request = None):
     tags=["export"],
     summary="Download filled questionnaire as PDF",
 )
-def download_pdf(session_id: str, request: Request = None):
+def download_pdf(session_id: str, request: Request = None, user_id: Optional[str] = Depends(verify_token)):
     """Returns a PDF with all questions and approved/edited answers."""
     session = get_session(session_id)
+    _assert_owns_session(session, user_id)
     data = export_pdf(session.questions, session.answers)
     analytics.export_downloaded(session_id, "pdf", len(session.questions))
     audit.emit("export.download", resource_type="session", resource_id=session_id,
@@ -767,13 +892,14 @@ def read_supabase_audit(limit: int = 100, action: str = None):
     tags=["answers"],
     summary="Session summary statistics",
 )
-def session_summary(session_id: str):
+def session_summary(session_id: str, user_id: Optional[str] = Depends(verify_token)):
     """
     Returns aggregate stats for a completed session:
     coverage breakdown, certainty distribution, needs-review count.
     Useful for Mixpanel-style dashboards built on the data.
     """
     session = get_session(session_id)
+    _assert_owns_session(session, user_id)
     answers = list(session.answers.values())
     if not answers:
         return {"total": 0}

@@ -14,7 +14,8 @@ import time
 from collections import defaultdict
 from typing import Callable
 
-from fastapi import Request, Response, HTTPException
+from fastapi import Request, Response
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from observability import logger
@@ -83,9 +84,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 "rate_limit_exceeded",
                 extra={"ip": ip, "path": request.url.path, "count": len(_rate_store[ip])},
             )
-            raise HTTPException(
+            # Return directly (not raise) so CORS headers from outer middleware are applied
+            return JSONResponse(
                 status_code=429,
-                detail=f"Rate limit exceeded: {_RATE_LIMIT} requests per minute",
+                content={"detail": f"Rate limit exceeded: {_RATE_LIMIT} requests per minute"},
+                headers={"Access-Control-Allow-Origin": "*"},
             )
 
         _rate_store[ip].append(now)

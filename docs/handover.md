@@ -7,39 +7,41 @@ Read this first, then `docs/architecture.md`.
 
 ---
 
-## Phase 1 Complete — State as of 2026-03-09
+## Current State — Phase 1 + Phase 2 scaffolding (2026-03-09)
 
-Phase 1 (MVP) is **feature-complete and running**. All items below reflect the current deployed state. A new engineer can clone, set env vars, and have the full stack running in under 10 minutes.
+Phase 1 is **complete**. A Phase 2 UX pass was shipped in the same session:
+landing page, session URL persistence, un-approve button, tab renames, auth scaffolding (not activated).
 
-### What is working
+### Capability table
 
 | Capability | Status | Notes |
 |---|---|---|
 | Multi-provider LLM (Groq / Google / Anthropic) | Live | `LLM_PROVIDER` env var switches provider at runtime |
-| Groq key rotation across 5 keys | Live | Round-robins to spread TPD quota |
+| Groq key pool (up to 19 keys) | Live | `GROQ_API_KEY`, `GROQ_API_KEY_2` … `GROQ_API_KEY_19`; TPD-aware blacklisting |
 | Questionnaire parsing (Excel, PDF, CSV, paste) | Live | `parser.py` |
-| Compliance doc ingestion (PDF, DOCX) | Live | `ingest.py`; 32KB char budget per prompt |
-| Answer generation with `assertive` / `hedged` tone | Live | `engine.py`; `cannot_answer` is a bug, not a valid tone |
-| SSE streaming of answers as they complete | Live | `GET /api/sessions/{id}/stream` |
-| Review / edit / approve UI | Live | `Review.jsx` |
+| Compliance doc ingestion (PDF, DOCX) | Live | 32KB total budget, 16KB per doc (`DOC_CHAR_BUDGET`, `DOC_CHAR_LIMIT`) |
+| Draft-first answer generation | Live | `engine.py`; assertive / hedged tones; never blank |
+| Dynamic `max_tokens` per answer format | Live | yes_no → 512, yes_no_evidence → 900, default → 2048 |
+| Sequential processing (default) | Live | `ANSWER_CONCURRENCY=1`, `QUESTION_DELAY_S=1.5` |
+| Parallel processing (optional) | Available | Set `ANSWER_CONCURRENCY > 1`; ThreadPoolExecutor; 6-8× faster but not the default |
+| SSE streaming of answers | Live | `GET /api/sessions/{id}/stream` |
+| Landing page | Live | First screen in React SPA; hero, highlights, "where we stand", phase 2 roadmap, CTA |
+| Review / edit / approve / un-approve UI | Live | `Review.jsx` + `QuestionCard.jsx` |
+| Session URL persistence | Live | `?s=<sessionId>` in URL; hard refresh restores to Review screen |
+| Tab labels | Live | "Answered" and "Flagged" (renamed from "Ready" / "Review") |
 | Excel + PDF export | Live | `export.py` |
 | Structured JSON logging + request tracing | Live | `observability.py` |
 | Append-only audit trail | Live | `audit.py` → `audit.log` |
 | Mixpanel analytics | Live | Token configured; 5-step funnel tracked |
-| Security headers + in-memory rate limiter | Live | `security.py` |
-| Supabase DB schema | Schema ready, not wired | `migrations/001_initial_schema.sql` — Phase 2 wires it |
-| Branch protection on `main` | Active | PR required, no force push, no deletion |
-
-### Active configuration (free Groq tier)
-
-```
-ANSWER_CONCURRENCY=1
-QUESTION_DELAY_S=1.5
-DOC_CHAR_BUDGET=32000
-GROQ_API_KEY_1 … GROQ_API_KEY_5  (5 keys, rotate at midnight UTC if exhausted)
-```
-
-See `docs/runbook.md → Phase 1 Checkpoint` for scale-up settings and TPD recovery steps.
+| Security headers middleware | **DISABLED** | Commented out in `main.py` — caused CORS header interception; tracked as open issue |
+| In-memory rate limiter | **DISABLED** | Same reason as above — Phase 2: Redis |
+| Auth gate (App.jsx) | **NOT active** | Auth.jsx + supabase.js scaffolded; gate removed — app runs without Supabase |
+| JWT validation (backend) | Scaffolded | `verify_token` dependency exists; only wired to `POST /api/sessions` |
+| Per-user session cap | Scaffolded | `MAX_SESSIONS_PER_USER=3`; only enforced when `SUPABASE_JWT_SECRET` is set |
+| Max questions per session | Live | `MAX_QUESTIONS_PER_SESSION=100`; enforced on questionnaire upload |
+| Supabase DB schema | Schema ready | `migrations/001_initial_schema.sql` — wire in Phase 2 |
+| RLS policies | Migration ready | `migrations/002_rls_policies.sql` — run after auth is activated |
+| Session restore from Supabase | Scaffolded | `_restore_session()` in `main.py` — attempts Supabase lookup on cache miss |
 
 ---
 
@@ -57,35 +59,43 @@ and drafts every answer. The user then reviews, edits, approves, and exports the
 ```
 seques/
 ├── backend/
-│   ├── main.py           ← FastAPI app entry point
-│   ├── engine.py         ← LLM answering logic
-│   ├── parser.py         ← Questionnaire parsing
-│   ├── ingest.py         ← Compliance doc ingestion
-│   ├── llm.py            ← Multi-provider LLM wrapper
+│   ├── main.py           ← FastAPI app; all routes; auth scaffolding; session store
+│   ├── engine.py         ← LLM answering logic; draft-first generation
+│   ├── parser.py         ← Questionnaire parsing (Excel, PDF, CSV, text)
+│   ├── ingest.py         ← Compliance doc ingestion (PDF, DOCX)
+│   ├── llm.py            ← Multi-provider LLM wrapper; Groq key pool; backoff
 │   ├── models.py         ← Pydantic data models
 │   ├── export.py         ← Excel + PDF generation
 │   ├── observability.py  ← Structured logging + request tracing
 │   ├── audit.py          ← Immutable audit trail
 │   ├── analytics.py      ← Mixpanel event tracking
-│   ├── security.py       ← Security headers + rate limiting
+│   ├── security.py       ← Security headers + rate limiting (currently disabled)
+│   ├── database.py       ← Supabase CRUD scaffold
 │   ├── requirements.txt
 │   ├── .env              ← Secrets (gitignored)
-│   └── .env.example      ← Template — copy to .env
+│   ├── .env.example      ← Template — copy to .env
+│   └── migrations/
+│       ├── 001_initial_schema.sql  ← sessions, questions, answers, audit_events
+│       └── 002_rls_policies.sql    ← RLS policies (run after auth activated)
 ├── frontend/
+│   ├── .env.example      ← VITE_API_URL, VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
 │   └── src/
-│       ├── App.jsx
-│       ├── api.js         ← All fetch calls
+│       ├── App.jsx        ← Root; screen state; URL persistence; no auth gate currently
+│       ├── api.js         ← All fetch calls; setAuthToken() wired but not called yet
+│       ├── supabase.js    ← Supabase client (null if env vars absent)
 │       └── screens/
+│           ├── Landing.jsx    ← First screen; marketing + CTA
 │           ├── Upload.jsx     ← Step 1: upload docs + questionnaire
-│           ├── Processing.jsx ← Step 2: poll /status
-│           ├── Review.jsx     ← Step 3: edit/approve answers
-│           └── Export.jsx     ← Step 4: download
+│           ├── Processing.jsx ← Step 2: SSE stream + terminal log
+│           ├── Review.jsx     ← Step 3: filter tabs (All/Answered/Flagged/Gaps)
+│           ├── Export.jsx     ← Step 4: download Excel or PDF
+│           └── Auth.jsx       ← Supabase magic link screen (scaffolded, not in flow)
 └── docs/
     ├── handover.md          ← THIS FILE
     ├── architecture.md      ← System diagram + module map
     ├── runbook.md           ← Ops procedures
     └── compliance/
-        ├── data_inventory.md   ← GDPR Art 30 register
+        ├── data_inventory.md
         ├── SOC2_controls.md
         ├── GDPR_controls.md
         └── ISO27001_controls.md
@@ -98,7 +108,7 @@ seques/
 ```bash
 # Backend
 cd backend
-python -m venv venv && source venv/bin/activate
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # fill in at least one LLM key
 uvicorn main:app --reload --port 8000
@@ -107,11 +117,28 @@ uvicorn main:app --reload --port 8000
 cd frontend
 npm install
 npm run dev
-# Opens at http://localhost:5173
+# Opens at http://localhost:5173 (or next available port)
 ```
 
 Swagger UI: http://localhost:8000/docs
-Audit log: `backend/audit.log`
+Landing page: first screen at the frontend URL
+
+---
+
+## Exact Runtime Configuration (as shipped)
+
+```
+ANSWER_CONCURRENCY=1       # sequential — one question at a time
+QUESTION_DELAY_S=1.5       # 1.5s pause between LLM calls (TPM headroom)
+DOC_CHAR_BUDGET=32000      # total chars across all uploaded docs
+DOC_CHAR_LIMIT=16000       # max chars per individual doc
+GROQ_API_KEY_1 … (up to GROQ_API_KEY_19)
+```
+
+**LLM models (as of 2026-03-09):**
+- Groq: `llama-3.3-70b-versatile`
+- Anthropic: `claude-haiku-4-5-20251001`
+- Google: `gemini-2.0-flash`
 
 ---
 
@@ -121,118 +148,45 @@ Audit log: `backend/audit.log`
 |---|---|
 | FastAPI + uvicorn | Async-native, auto-generates OpenAPI/Swagger, Python ecosystem |
 | In-memory sessions | MVP simplicity; Supabase persistence is Phase 2 |
-| Multi-provider LLM (llm.py) | User wanted to test free providers (Groq, Google) before paying Anthropic |
+| Multi-provider LLM (llm.py) | No vendor lock-in; free providers (Groq, Google) for development |
 | `LLM_PROVIDER` env var | Single switch, no code changes needed to swap models |
-| Append-only `audit.log` | Simplest SOC 2 CC7.2 implementation; ship to SIEM in Phase 2 |
-| Doc truncation to 8KB | Prevents runaway token costs; Phase 2 adds RAG for large docs |
-| Mixpanel analytics | User-requested; events are PII-free (no doc content) |
+| Append-only `audit.log` | Simplest SOC 2 CC7.2 implementation |
+| `ANSWER_CONCURRENCY=1` default | Reliability — parallel mode hit ordering anomalies under Groq rate limits |
+| 32KB total / 16KB per-doc budget | Prevents runaway token costs on Groq free tier |
+| Mixpanel analytics | PII-free funnel tracking; Mixpanel free tier generous |
 | Tailwind + React | Rapid UI iteration; no design system dependencies |
+| Landing page as first React screen | No separate deploy; same Vite app; consistent dark theme |
+| Auth scaffolded but not gated | App must work today without credentials; gate activates when Supabase is configured |
+| Security middleware disabled | Was intercepting exceptions before CORS headers applied; revisit in Phase 2 |
 
 ---
 
-## Known Gaps — Phase 1 (do not re-investigate, already documented)
-
-These are intentional Phase 1 trade-offs, not bugs. All are accepted and tracked for Phase 2.
+## Known Gaps (do not re-investigate — already documented)
 
 | Gap | Impact | Phase 2 Fix |
 |---|---|---|
-| No authentication | Any caller can create/read sessions | Supabase Auth (JWT) |
-| In-memory sessions | Restart wipes all sessions | Wire Supabase persistence (`database.py` scaffold exists) |
-| Single process | All sessions share one uvicorn worker | Celery workers + Redis broker |
-| In-memory rate limiter | Won't scale to multiple workers | Redis-backed rate limiter |
-| 32KB doc char budget | Large SOC 2 reports lose detail beyond ~10 pages | Vector embeddings + RAG pipeline |
-| No LLM retry on failure | Groq timeout → that question errors, no auto-recover | Exponential backoff retry in `engine.py` |
-| No DPAs with sub-processors | Pre-launch blocker for GDPR/SOC 2 | Execute DPAs with Groq, Google, Anthropic, Mixpanel, Supabase |
-
-## Phase 2 — What to Build Next (2026-03-09)
-
-Priority order for the next engineer picking this up:
-
-1. **Supabase persistence** — `database.py` has the CRUD scaffold; `migrations/001_initial_schema.sql` has the full schema. Wire `main.py` to write sessions/questions/answers to Supabase instead of the in-memory dict. This unblocks multi-worker deployment.
-2. **Authentication** — Add Supabase Auth. Gate all `/api/sessions/*` routes on a valid JWT. Add user_id to audit events.
-3. **LLM retry with backoff** — Wrap the `llm.py` `complete()` call in a retry loop (3 attempts, exponential backoff). Catches transient Groq 429s and timeouts.
-4. **Redis rate limiter** — Replace the in-memory dict in `security.py` with a Redis-backed counter (e.g., `redis-py` + `slowapi`). Required before multi-worker deploy.
-5. **RAG for large docs** — Chunk compliance docs, embed with a small model (e.g., `text-embedding-3-small`), store vectors in Supabase `pgvector`. At query time, retrieve the top-k chunks relevant to each question instead of the flat char budget.
-6. **DPAs** — Legal task, not engineering. Block production launch on this.
-
-## Mixpanel Dashboard Setup
+| No auth gate | Any caller can create/read sessions | Wire Auth.jsx into App.jsx; add `Depends(verify_token)` to all routes |
+| In-memory sessions | Restart wipes all sessions | Wire Supabase persistence (scaffold in `database.py`) |
+| Security middleware disabled | No CSP / HSTS / rate limiting in process | Fix middleware exception handling; re-enable |
+| 32KB doc budget | Large SOC 2 reports lose detail beyond ~7 pages | RAG with pgvector in Phase 2 |
+| No DPAs signed | Pre-launch blocker for GDPR/SOC 2 | Execute DPAs with Groq, Google, Anthropic, Mixpanel, Supabase |
+| JWT only on POST /api/sessions | Other session routes unprotected | Add `Depends(verify_token)` to all session/answer routes |
+| _user_sessions dict resets | Per-user session cap lost on restart | Move to Supabase query when persistence is wired |
+| password-protected .docx | Will raise error; not gracefully handled | Catch and return user-friendly error |
 
 ---
 
-## Mixpanel Dashboard Setup
+## Phase 2 — What to Build Next
 
-Mixpanel is **live** — token is configured in `backend/.env`. Events flow on every session.
+Priority order:
 
-To verify it is working:
-1. Start backend and run a test session end-to-end.
-2. Open Mixpanel Live View — you should see `session_created`, `docs_uploaded`, `processing_started`, `processing_completed`, `export_downloaded` events within seconds.
-
-**Recommended dashboards to create in Mixpanel UI**:
-
-| Dashboard | Key metrics |
-|---|---|
-| Funnel | session_created → docs_uploaded → questionnaire_uploaded → processing_started → export_downloaded |
-| Quality | avg ai_certainty, needs_review_count / question_count |
-| Provider A/B | processing_completed broken down by provider; avg duration_ms |
-| Errors | api_error count by path and status_code |
-| Engagement | answer_edited + answer_approved rates |
-
----
-
-## Supabase Schema (Phase 2 Target)
-
-```sql
--- sessions table
-create table sessions (
-  id uuid primary key,
-  provider text not null,
-  client_ip text,
-  created_at timestamptz default now(),
-  processing_started_at timestamptz,
-  processing_completed_at timestamptz,
-  questionnaire_type text,
-  questionnaire_filename text
-);
-
--- questions table
-create table questions (
-  id text primary key,  -- e.g. "q_001"
-  session_id uuid references sessions(id) on delete cascade,
-  text text not null,
-  answer_format text,
-  category text,
-  original_row int
-);
-
--- answers table
-create table answers (
-  question_id text references questions(id) on delete cascade,
-  session_id uuid references sessions(id) on delete cascade,
-  draft_answer text,
-  evidence_coverage text,
-  ai_certainty int,
-  answer_tone text,
-  status text default 'draft',
-  needs_review boolean,
-  evidence_sources jsonb,
-  updated_at timestamptz default now(),
-  primary key (question_id, session_id)
-);
-
--- audit_events table (replaces audit.log file)
-create table audit_events (
-  event_id uuid primary key,
-  ts timestamptz not null,
-  action text not null,
-  actor text,
-  resource_type text,
-  resource_id text,
-  outcome text,
-  request_id text,
-  detail jsonb
-);
--- Row-level security: audit_events should be INSERT-only for app role
-```
+1. **Run Supabase migrations** — apply `001_initial_schema.sql` then `002_rls_policies.sql` in Supabase dashboard. No code changes needed, just SQL execution.
+2. **Activate auth gate** — add `if supabase && !user return <Auth />` back to `App.jsx`; call `setAuthToken()` in `App.jsx` after `getSession()`; add `Depends(verify_token)` to remaining session/answer routes in `main.py`.
+3. **Wire Supabase persistence** — replace in-memory dict writes in `main.py` with `database.py` calls. `_restore_session()` is already implemented.
+4. **Re-enable security middleware** — fix exception handling so CORS headers are applied before middleware catches errors; re-enable `SecurityHeadersMiddleware` and `RateLimitMiddleware`.
+5. **Redis rate limiter** — replace `security.py` in-memory dict with Redis-backed counter (`slowapi`). Required before multi-worker deploy.
+6. **RAG for large docs** — chunk compliance docs, embed with `text-embedding-3-small`, store in Supabase `pgvector`. Retrieve top-k chunks per question instead of flat char budget.
+7. **Sign DPAs** — legal task, not engineering. Block production launch on this.
 
 ---
 
@@ -240,25 +194,36 @@ create table audit_events (
 
 Status updated 2026-03-09.
 
-- [x] Rotate all API keys that were shared in plaintext — done
-- [x] Enable GitHub branch protection on `main` — PR required, no force push, no deletion
-- [x] Security headers + in-memory rate limiter — live via `security.py`
+- [x] Rotate all API keys that were shared in plaintext
+- [x] Enable GitHub branch protection on `main`
 - [x] Append-only audit trail — live via `audit.py` / `audit.log`
-- [ ] Add authentication (Supabase Auth recommended) — Phase 2
+- [x] Auth scaffolded — JWT validation in `verify_token`, RLS migration ready
+- [ ] Activate auth gate in App.jsx and all backend routes — Phase 2
+- [ ] Run RLS migration (`002_rls_policies.sql`) in Supabase dashboard — Phase 2
+- [ ] Re-enable `SecurityHeadersMiddleware` + `RateLimitMiddleware` — Phase 2
 - [ ] Set `ENVIRONMENT=production` to enable HSTS + strict CSP — pre-launch
 - [ ] Verify TLS termination at load balancer/CDN — pre-launch
-- [ ] Execute DPAs with Groq, Google, Anthropic, Mixpanel, Supabase — pre-launch blocker
+- [ ] Execute DPAs with Groq, Google, Anthropic, Mixpanel, Supabase — **pre-launch blocker**
 - [ ] Publish privacy notice at `/privacy` — pre-launch
 - [ ] Enable Dependabot for dependency CVE scanning — pre-launch
-- [ ] Ship `audit.log` to a SIEM or Supabase `audit_events` table — Phase 2
+- [ ] Ship `audit.log` to Supabase `audit_events` table — Phase 2
 - [ ] Replace in-memory rate limiter with Redis — Phase 2
+
+---
+
+## Supabase Schema (Phase 2 Target)
+
+Run `migrations/001_initial_schema.sql` then `migrations/002_rls_policies.sql` in the Supabase SQL editor.
+
+Key tables: `sessions` (with `user_id` FK to `auth.users`), `questions`, `answers`, `audit_events`.
+RLS policies: per-user ownership on sessions/questions/answers; INSERT-only audit via service role.
 
 ---
 
 ## Contact / Ownership
 
-| Role | Owner | Contact |
-|---|---|---|
-| Engineering | Samrat Talukder | — |
-| AI/LLM | Claude (Sonnet 4.6) | — |
-| Compliance review | TBD | — |
+| Role | Owner |
+|---|---|
+| Engineering | Samrat Talukder |
+| AI/LLM | Claude (Sonnet 4.6) |
+| Compliance review | TBD |
