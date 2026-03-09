@@ -12,7 +12,7 @@ export default function Landing({ onStart }) {
             onClick={onStart}
             className="text-xs font-semibold text-base bg-accent px-4 py-1.5 rounded-lg hover:bg-amber-300 transition-all"
           >
-            Try it now
+            Get started
           </button>
         </div>
       </nav>
@@ -21,7 +21,7 @@ export default function Landing({ onStart }) {
         {/* Hero */}
         <div className="pt-20 pb-14 border-b border-subtle">
           <div className="inline-flex items-center gap-2 text-[11px] font-mono text-amber-400 bg-amber-400/10 border border-amber-400/25 px-3 py-1 rounded-full mb-8 tracking-wide">
-            v0.3.0 — Phase 1 complete
+            v0.4.0 — Auth live · Supabase · Tests green
           </div>
           <h1 className="text-5xl font-bold tracking-tight leading-[1.12] text-primary mb-5">
             AI drafts every answer<br />to security questionnaires.<br />
@@ -36,20 +36,19 @@ export default function Landing({ onStart }) {
             onClick={onStart}
             className="inline-flex items-center gap-2 bg-accent text-base font-semibold px-6 py-3 rounded-xl hover:bg-amber-300 transition-all shadow-btn-primary text-sm"
           >
-            Try it now — no sign-in required
+            Get started →
           </button>
 
-          {/* v0.3.0 highlights */}
+          {/* v0.4.0 highlights */}
           <div className="mt-12 pt-8 border-t border-subtle">
-            <p className="text-[11px] font-mono text-muted uppercase tracking-widest mb-4">What shipped in v0.3.0</p>
+            <p className="text-[11px] font-mono text-muted uppercase tracking-widest mb-4">What shipped in v0.4.0</p>
             <div className="grid gap-2.5">
               {[
-                ['Landing page', 'you\'re looking at it — product now has a proper home before the upload form'],
-                ['Session URL persistence', 'hard refresh restores your session — no more losing work mid-review'],
-                ['Un-approve button', 'approval is now reversible — click to revert any approved answer back to edited'],
-                ['Tab labels: Answered / Flagged', 'renamed from Ready / Review — clearer, no ambiguity with surrounding copy'],
-                ['Auth scaffolded', 'Supabase Magic Link flow, backend JWT validation, RLS migration — ready to activate in Phase 2'],
-                ['Per-session question cap', '100-question limit enforced on upload — prevents accidental oversized runs'],
+                ['Auth live', 'Supabase Magic Link — sign in with your email, no password needed. Sessions scoped to your account.'],
+                ['Supabase persistence', 'Sessions survive server restarts. Your work is saved to the database and tied to your user.'],
+                ['Security middleware active', 'SecurityHeadersMiddleware and RateLimitMiddleware now running on every request — CSP, HSTS, X-Frame-Options, 30 req/min per IP.'],
+                ['Supabase migrations run', 'sessions, questions, answers, audit_events tables live. RLS policies enforcing per-user data isolation.'],
+                ['Test suite green', '185 tests passing across API, engine, LLM, parser, ingest, and audit modules.'],
               ].map(([title, detail]) => (
                 <div key={title} className="flex items-baseline gap-3 text-sm text-secondary">
                   <span className="text-success-text text-xs flex-shrink-0 mt-px">✓</span>
@@ -82,8 +81,8 @@ export default function Landing({ onStart }) {
                 body: 'Up to 32KB of text across all uploaded docs (16KB per doc). Covers most policy documents and shorter SOC 2 summaries well. Large SOC 2 reports (50-120KB) get truncated. Phase 2 adds RAG — the engine will retrieve only the sections relevant to each question.',
               },
               {
-                title: 'In-memory sessions — no auth, no persistence across restarts',
-                body: 'Sessions live in a Python dict and are lost on server restart. The Supabase schema and CRUD layer are ready; we chose not to wire them in Phase 1. URL persistence means a hard refresh recovers your session as long as the server is running.',
+                title: 'Sessions persist to Supabase — scoped to your account',
+                body: 'Sessions are written to Supabase on creation and restored automatically on server restart. Your work is tied to your account and survives beyond the current server process.',
               },
               {
                 title: 'Three LLM providers — Groq is default',
@@ -105,32 +104,24 @@ export default function Landing({ onStart }) {
 
         {/* What's next */}
         <div className="py-14 border-b border-subtle">
-          <p className="text-[11px] font-mono text-muted uppercase tracking-widest mb-2">Phase 2 roadmap</p>
-          <h2 className="text-2xl font-bold tracking-tight text-primary mb-2">What's coming next</h2>
+          <p className="text-[11px] font-mono text-muted uppercase tracking-widest mb-2">What's next</p>
+          <h2 className="text-2xl font-bold tracking-tight text-primary mb-2">Coming up</h2>
           <p className="text-sm text-muted mb-8">
-            Auth first, then persistence, then smarter document handling.
+            Foundation is solid. Now making answers smarter and the system faster.
           </p>
           <div className="grid gap-6">
             {[
-              {
-                title: 'Activate auth — everything is already built',
-                body: 'Auth.jsx (Supabase Magic Link), backend JWT validation, and RLS policies are all scaffolded and waiting. Activating the gate is a two-line change in App.jsx plus running the SQL migration. Beta access will be invite-only through this flow.',
-              },
-              {
-                title: 'Full session persistence in Supabase',
-                body: 'The schema and CRUD layer are ready. Wiring them means sessions survive server restarts, are scoped to your account, and are accessible across devices. URL persistence is a stopgap; real persistence is the Phase 2 fix.',
-              },
               {
                 title: 'RAG for large compliance docs',
                 body: 'Chunk your compliance documents, embed them with a small model, store vectors in Supabase pgvector. At query time, retrieve only the sections relevant to each question. No 32KB ceiling, better answer quality for large SOC 2 reports.',
               },
               {
                 title: 'True parallel processing with safety guarantees',
-                body: 'Phase 2 revisits concurrency with async LLM clients and a Redis-backed rate-limit budget tracker. The goal is ANSWER_CONCURRENCY=10 as the reliable default — 6-8× faster than today without the ordering anomalies that pushed us back to sequential.',
+                body: 'Revisiting concurrency with async LLM clients and a Redis-backed rate-limit budget tracker. The goal is ANSWER_CONCURRENCY=10 as the reliable default — 6-8× faster than today without the ordering anomalies that pushed sequential mode.',
               },
               {
-                title: 'Re-enable security headers and rate limiting',
-                body: 'SecurityHeadersMiddleware and RateLimitMiddleware are implemented but currently disabled — they were intercepting exceptions before CORS headers could be applied. The fix requires careful middleware exception handling in Starlette.',
+                title: 'Redis rate limiter',
+                body: 'Replace the in-memory rate limiter with Redis. Required before horizontal scaling — the current limiter resets on each process restart and doesn\'t share state across workers.',
               },
             ].map(({ title, body }) => (
               <div key={title} className="flex gap-4">
@@ -153,13 +144,12 @@ export default function Landing({ onStart }) {
           </h2>
           <p className="text-secondary text-base mb-8 max-w-md mx-auto leading-relaxed">
             Upload your docs and a questionnaire. See draft answers in under 90 seconds.
-            No sign-in, no setup.
           </p>
           <button
             onClick={onStart}
             className="inline-flex items-center gap-2 bg-accent text-base font-semibold px-8 py-3.5 rounded-xl hover:bg-amber-300 transition-all shadow-btn-primary text-sm"
           >
-            Try it now
+            Get started
           </button>
         </div>
       </div>

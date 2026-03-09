@@ -7,10 +7,10 @@ Read this first, then `docs/architecture.md`.
 
 ---
 
-## Current State — Phase 1 + Phase 2 scaffolding (2026-03-09)
+## Current State — Phase 2 active (2026-03-10)
 
-Phase 1 is **complete**. A Phase 2 UX pass was shipped in the same session:
-landing page, session URL persistence, un-approve button, tab renames, auth scaffolding (not activated).
+Phase 1 is **complete**. Phase 2 core is now live:
+auth gate active (Supabase Magic Link), Supabase migrations run, security middleware enabled, test suite green (185 tests).
 
 ### Capability table
 
@@ -33,15 +33,16 @@ landing page, session URL persistence, un-approve button, tab renames, auth scaf
 | Structured JSON logging + request tracing | Live | `observability.py` |
 | Append-only audit trail | Live | `audit.py` → `audit.log` |
 | Mixpanel analytics | Live | Token configured; 5-step funnel tracked |
-| Security headers middleware | **DISABLED** | Commented out in `main.py` — caused CORS header interception; tracked as open issue |
-| In-memory rate limiter | **DISABLED** | Same reason as above — Phase 2: Redis |
-| Auth gate (App.jsx) | **NOT active** | Auth.jsx + supabase.js scaffolded; gate removed — app runs without Supabase |
-| JWT validation (backend) | Scaffolded | `verify_token` dependency exists; only wired to `POST /api/sessions` |
-| Per-user session cap | Scaffolded | `MAX_SESSIONS_PER_USER=3`; only enforced when `SUPABASE_JWT_SECRET` is set |
+| Security headers middleware | **Live** | Active in `main.py` — X-Frame-Options, nosniff, Referrer-Policy, Permissions-Policy |
+| In-memory rate limiter | **Live** | 30 req/min per IP; Redis replacement is Phase 3 |
+| Auth gate (App.jsx) | **Live** | Magic Link gate active — `if (supabase && !user) return <Auth />` |
+| JWT validation (backend) | **Live** | `verify_token` on all session/answer routes; enabled via `SUPABASE_JWT_SECRET` |
+| Per-user session cap | **Live** | `MAX_SESSIONS_PER_USER=3`; enforced when auth is enabled |
 | Max questions per session | Live | `MAX_QUESTIONS_PER_SESSION=100`; enforced on questionnaire upload |
-| Supabase DB schema | Schema ready | `migrations/001_initial_schema.sql` — wire in Phase 2 |
-| RLS policies | Migration ready | `migrations/002_rls_policies.sql` — run after auth is activated |
-| Session restore from Supabase | Scaffolded | `_restore_session()` in `main.py` — attempts Supabase lookup on cache miss |
+| Supabase DB schema | **Live** | `001_initial_schema.sql` run 2026-03-10 |
+| RLS policies | **Live** | `002_rls_policies.sql` run 2026-03-10 — per-user isolation |
+| Session restore from Supabase | **Live** | `_restore_session()` loads from Supabase on cache miss |
+| Test suite | **Green** | 185 tests passing — test_api, test_engine, test_llm, test_parser, test_ingest, test_audit |
 
 ---
 
@@ -176,17 +177,22 @@ GROQ_API_KEY_1 … (up to GROQ_API_KEY_19)
 
 ---
 
-## Phase 2 — What to Build Next
+## Phase 2 — DONE (2026-03-10)
+
+- [x] Run Supabase migrations (001 + 002)
+- [x] Activate auth gate (App.jsx + backend verify_token on all routes)
+- [x] Security middleware enabled (SecurityHeadersMiddleware + RateLimitMiddleware)
+- [x] Supabase write-through persistence + session restore
+- [x] Test suite green (185 tests)
+
+## Phase 3 — What to Build Next
 
 Priority order:
 
-1. **Run Supabase migrations** — apply `001_initial_schema.sql` then `002_rls_policies.sql` in Supabase dashboard. No code changes needed, just SQL execution.
-2. **Activate auth gate** — add `if supabase && !user return <Auth />` back to `App.jsx`; call `setAuthToken()` in `App.jsx` after `getSession()`; add `Depends(verify_token)` to remaining session/answer routes in `main.py`.
-3. **Wire Supabase persistence** — replace in-memory dict writes in `main.py` with `database.py` calls. `_restore_session()` is already implemented.
-4. **Re-enable security middleware** — fix exception handling so CORS headers are applied before middleware catches errors; re-enable `SecurityHeadersMiddleware` and `RateLimitMiddleware`.
-5. **Redis rate limiter** — replace `security.py` in-memory dict with Redis-backed counter (`slowapi`). Required before multi-worker deploy.
-6. **RAG for large docs** — chunk compliance docs, embed with `text-embedding-3-small`, store in Supabase `pgvector`. Retrieve top-k chunks per question instead of flat char budget.
-7. **Sign DPAs** — legal task, not engineering. Block production launch on this.
+1. **RAG for large docs** — chunk compliance docs, embed with `text-embedding-3-small`, store in Supabase `pgvector`. Retrieve top-k chunks per question instead of flat 32KB char budget.
+2. **Redis rate limiter** — replace `security.py` in-memory dict with Redis-backed counter. Required before multi-worker deploy.
+3. **Parallel processing** — revisit `ANSWER_CONCURRENCY > 1` with Redis rate budget tracking. Goal: 10× concurrency as reliable default.
+4. **Sign DPAs** — legal task, not engineering. Block production launch on this.
 
 ---
 
@@ -198,9 +204,9 @@ Status updated 2026-03-09.
 - [x] Enable GitHub branch protection on `main`
 - [x] Append-only audit trail — live via `audit.py` / `audit.log`
 - [x] Auth scaffolded — JWT validation in `verify_token`, RLS migration ready
-- [ ] Activate auth gate in App.jsx and all backend routes — Phase 2
-- [ ] Run RLS migration (`002_rls_policies.sql`) in Supabase dashboard — Phase 2
-- [ ] Re-enable `SecurityHeadersMiddleware` + `RateLimitMiddleware` — Phase 2
+- [x] Activate auth gate in App.jsx and all backend routes — done 2026-03-10
+- [x] Run RLS migration (`002_rls_policies.sql`) in Supabase dashboard — done 2026-03-10
+- [x] Re-enable `SecurityHeadersMiddleware` + `RateLimitMiddleware` — done 2026-03-10
 - [ ] Set `ENVIRONMENT=production` to enable HSTS + strict CSP — pre-launch
 - [ ] Verify TLS termination at load balancer/CDN — pre-launch
 - [ ] Execute DPAs with Groq, Google, Anthropic, Mixpanel, Supabase — **pre-launch blocker**

@@ -114,8 +114,8 @@ export default function App() {
   }
 
   if (!authReady) return null
-  if (supabase && !user) return <Auth />
   if (screen === 'landing') return <Landing onStart={() => setScreen('upload')} />
+  if (supabase && !user) return <Auth />
 
   return (
     <div className="min-h-screen bg-base">

@@ -281,3 +281,22 @@
 **Context**: "Ready" was ambiguous (ready for what?). "Review" as a tab label inside a screen called "Review" was redundant. Both names clashed with plain English usage in surrounding UI copy.
 
 **Outcome**: Tab keys, filter logic, empty state messages, and stats subtitle all updated in `Review.jsx`.
+
+---
+
+## 2026-03-10 — Phase 2 complete: auth, security middleware, tests, migrations
+
+**Decision**: Confirmed Phase 2 complete. All items verified live.
+
+**Context**: Migrations run by founder. Code review confirmed auth was already fully wired in App.jsx (line 117: `if (supabase && !user) return <Auth />`), security middleware already active in main.py (lines 76-77), JWT validation on all routes, Supabase write-through + session restore working.
+
+Test suite had 37 failures due to `SUPABASE_JWT_SECRET` being live in `.env` (routes returned 401 instead of expected status codes) and rate limiter hitting 30 req/min limit during test runs. Fixed by setting both env vars to safe values in conftest.py and test_api.py before main import.
+
+**Outcome**:
+- 185 tests passing (was 37 failing)
+- Auth gate live — users must sign in via Magic Link
+- Security headers active on every response
+- RLS enforcing per-user data isolation in Supabase
+- Landing page updated to v0.4.0 — reflects actual state, removes "no sign-in required"
+
+**Phase 3 backlog**: RAG pipeline (pgvector), Redis rate limiter, parallel processing, DPAs.

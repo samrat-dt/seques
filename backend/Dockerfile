@@ -40,11 +40,11 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
 # Production server: gunicorn + uvicorn workers
 # --timeout 120: LLM calls can take 30-90s; default 30s kills in-flight requests
 # -w 2: suitable for single-core containers; raise to (2*cores+1) on larger instances
-CMD ["gunicorn", "main:app", \
-     "-k", "uvicorn.workers.UvicornWorker", \
-     "-w", "2", \
-     "--bind", "0.0.0.0:8000", \
-     "--timeout", "120", \
-     "--graceful-timeout", "30", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-"]
+CMD gunicorn main:app \
+    -k uvicorn.workers.UvicornWorker \
+    -w 2 \
+    --bind 0.0.0.0:${PORT:-8000} \
+    --timeout 120 \
+    --graceful-timeout 30 \
+    --access-logfile - \
+    --error-logfile -

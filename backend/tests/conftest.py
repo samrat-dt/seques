@@ -23,8 +23,10 @@ os.environ["LLM_PROVIDER"] = "groq"
 os.environ["GROQ_API_KEY"] = "test_key"
 os.environ["SUPABASE_URL"] = ""
 os.environ["SUPABASE_SERVICE_KEY"] = ""
+os.environ["SUPABASE_JWT_SECRET"] = ""  # disable auth in tests
 os.environ["MIXPANEL_TOKEN"] = ""
 os.environ["AUDIT_LOG_PATH"] = "/tmp/test_audit.log"
+os.environ["RATE_LIMIT_PER_MINUTE"] = "10000"  # disable effective rate limiting in tests
 
 import pytest
 from unittest.mock import MagicMock, patch

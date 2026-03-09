@@ -1,19 +1,20 @@
 # Seques — Shared Project State
 > Updated by any agent after significant changes. Read before acting.
 
-Last updated: 2026-03-09
-Updated by: Frontend Audit Agent
+Last updated: 2026-03-10
+Updated by: Orchestrator
 
 ## Current Status
 | Area | Status | Owner Agent |
 |---|---|---|
 | Backend API | Running on :8001 — sequential + streaming (ANSWER_CONCURRENCY=1) | backend |
-| Frontend UI | Running on :5175 — dark UI, landing page, URL persistence, un-approve | frontend |
+| Frontend UI | Running on :5175 — auth gate live, landing updated (v0.4.0) | frontend |
 | Mixpanel | Live | infra |
-| Supabase | Schema not yet run in dashboard | infra |
-| Auth | Auth.jsx + supabase.js exist but NOT wired into App.jsx — app runs without auth | backend/frontend |
-| RAG | Phase 2 | backend |
-| Tests | Not started (Phase 2) | testing |
+| Supabase | Migrations run (001 + 002) ✓ — schema + RLS live | infra |
+| Auth | Live — Magic Link gate in App.jsx, JWT validation on all routes | backend/frontend |
+| Security middleware | Live — SecurityHeadersMiddleware + RateLimitMiddleware active | backend |
+| Test suite | Green — 185 tests passing | testing |
+| RAG | Phase 3 | backend |
 | CI/CD | Set up | infra |
 | DPAs | Not signed (pre-launch blocker) | compliance |
 | Privacy notice | Not written | compliance |
@@ -146,19 +147,21 @@ State lives in `App.jsx`. No router library. Screen is a string state variable.
 
 Note: `lucide-react` is installed but not used in any screen file (icons are inline SVGs). It may be a dependency kept for future use or a leftover.
 
-## Phase 2 — PENDING (awaiting founder instructions)
-**Status**: No sprint started. Awaiting direction.
+## Phase 2 — COMPLETE (2026-03-10)
 
-### Known Phase 2 items (backlog)
-- [ ] Run Supabase migration (infra)
-- [ ] Write test suite (testing)
-- [ ] Sign DPAs (compliance)
-- [ ] Write privacy notice (compliance)
-- [ ] Auth — wire Auth.jsx into App.jsx; call `setAuthToken()` in api.js with Supabase JWT (backend/frontend)
-- [ ] Redis rate limiter (backend)
+- [x] Run Supabase migrations (001 + 002)
+- [x] Auth gate wired (App.jsx + all backend routes)
+- [x] Security middleware active
+- [x] Test suite green (185 tests)
+- [x] Supabase write-through + session restore
+- [x] SEC-009/SEC-011 — file size + MIME validation (already in main.py)
+
+## Phase 3 — Next
 - [ ] RAG pipeline + pgvector (backend)
-- [ ] CORS hardening (backend)
-- [ ] SEC-009/SEC-011 — file size + MIME validation (security)
+- [ ] Redis rate limiter (backend)
+- [ ] Parallel processing with Redis rate budget
+- [ ] Sign DPAs (compliance — pre-launch blocker)
+- [ ] Write privacy notice (compliance)
 
 ## Known Gaps
 | Gap | Status | Notes |
@@ -171,7 +174,7 @@ Note: `lucide-react` is installed but not used in any screen file (icons are inl
 | .docx text boxes / complex tables | Open | python-docx misses these; extraction gap |
 
 ## Blockers
-- Supabase migration SQL not yet run in dashboard
+- ~~Supabase migration SQL not yet run in dashboard~~ — done 2026-03-10
 - No auth = no multi-tenancy
 - No DPAs signed (pre-launch blocker)
 
