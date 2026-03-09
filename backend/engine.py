@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import List
 
@@ -35,8 +36,10 @@ NEEDS_REVIEW_KEYWORDS = [
     "patch within",
 ]
 
-DOC_CHAR_LIMIT = 40_000
-TOTAL_CHAR_BUDGET = 96_000
+# Groq free tier: 12k TPM. Budget = 12k - max_tokens(2048) - prompt overhead(~550) ≈ 9,400 tokens ≈ 37,600 chars.
+# Set conservatively at 32k to leave headroom. Override via env for paid tiers.
+TOTAL_CHAR_BUDGET = int(os.getenv("DOC_CHAR_BUDGET", "32000"))
+DOC_CHAR_LIMIT = int(os.getenv("DOC_CHAR_LIMIT", "16000"))
 
 
 def build_doc_context(docs: List[ComplianceDoc]) -> str:
@@ -69,8 +72,23 @@ def check_needs_review(question: Question, data: dict) -> bool:
     return False
 
 
-def answer_question(question: Question, docs: List[ComplianceDoc], provider: str | None = None) -> Answer:
-    doc_context = build_doc_context(docs)
+def _max_tokens_for_format(answer_format: AnswerFormat) -> int:
+    if answer_format == AnswerFormat.yes_no:
+        return 512
+    elif answer_format == AnswerFormat.yes_no_evidence:
+        return 900
+    else:
+        return 2048
+
+
+def answer_question(
+    question: Question,
+    docs: List[ComplianceDoc],
+    provider: str | None = None,
+    doc_context: str | None = None,
+) -> Answer:
+    if doc_context is None:
+        doc_context = build_doc_context(docs)
 
     prompt = f"""FRAMEWORK KNOWLEDGE:
 - SOC 2 Type II certified → implies: access controls, encryption at rest/in transit, incident response, change management, vulnerability management, business continuity controls are in place.
@@ -116,7 +134,7 @@ certainty: 90-100 explicit; 70-89 interpreted; 50-69 vague/tangential; 30-49 dom
             "no markdown fences, no preamble."
         ),
         user=prompt,
-        max_tokens=2048,
+        max_tokens=_max_tokens_for_format(question.answer_format),
         provider=provider,
     )
 

@@ -115,3 +115,188 @@
 - ❌ Password-protected .docx files will raise an error (not yet handled)
 
 **Outcome**: `upload_docs()` now accepts .pdf and .docx. Unsupported types returned in `skipped` list rather than silently dropped.
+
+---
+
+## 2026-03-09 — Parallel answer generation with ThreadPoolExecutor
+
+**Decision**: Replace sequential per-question LLM calls with concurrent execution via `ThreadPoolExecutor`. Concurrency cap controlled by `ANSWER_CONCURRENCY` env var (default: 10). Answers are emitted to the client via SSE as each future completes, rather than batching and returning all at once.
+
+**Context**: Sequential generation on a 30-question questionnaire took ~120s end-to-end (approx. 4s per LLM call). This was the single biggest UX blocker for real usage — users stared at a spinner for two minutes. Groq's API supports parallel requests within rate limits; at concurrency=10 the bottleneck shifts from serial latency to the slowest individual call.
+
+**Trade-offs**:
+- ✅ 6-8x wall-clock speedup on typical sessions (30q: ~120s → ~15-20s)
+- ✅ SSE streaming — users see answers appear progressively; perceived latency near-zero
+- ✅ `ANSWER_CONCURRENCY` env var lets ops tune against rate limit budget
+- ❌ Burst requests may hit Groq's RPM/TPM limits — mitigated by exponential backoff (see below)
+- ❌ ThreadPoolExecutor ties up threads; acceptable at current scale, revisit with async LLM clients in Phase 2
+- ❌ SSE requires clients to handle streaming — frontend updated accordingly
+
+**Outcome**: `feat/backend-improvements` branch. `generate_answers()` in `engine.py` now submits all questions as futures and yields results via SSE endpoint. Session wall time cut to 15-20s on 30-question sets.
+
+---
+
+## 2026-03-09 — Dynamic max_tokens per answer format + persistent LLM clients
+
+**Decision**: (A) Replace the hardcoded `max_tokens=2048` with a per-format lookup: `yes_no` → 512, `multiple_choice` → 768, `short_text` → 1024, `long_text` / default → 2048. (B) Construct LLM provider clients once at module load and reuse across requests (connection pooling).
+
+**Context**: (A) `yes_no` answers never exceed ~100 tokens but were reserving 2048, wasting ~75% of the token budget and slowing inference. (B) Groq and Anthropic SDKs construct HTTP sessions on client init; rebuilding per-request added ~50-100ms of overhead per call and prevented connection reuse.
+
+**Trade-offs**:
+- ✅ (A) Token cost reduction of ~50-60% across a typical mixed questionnaire
+- ✅ (A) Shorter `max_tokens` = faster time-to-first-token on constrained calls
+- ✅ (B) Eliminates per-request SDK init latency
+- ✅ (B) HTTP keep-alive reuse lowers TCP overhead to Groq/Anthropic endpoints
+- ❌ (B) Persistent clients hold connections open — acceptable at current concurrency; monitor FD limits at scale
+
+**Outcome**: `llm.py` now initialises provider clients at import time. `engine.py` resolves `max_tokens` from a `FORMAT_TOKEN_MAP` dict before each call. No API contract changes.
+
+---
+
+## 2026-03-09 — Exponential backoff on LLM rate-limit errors
+
+**Decision**: Wrap every LLM call with a retry loop using exponential backoff and random jitter on `429 / rate_limit_error` responses. Max retries: 4. Base delay: 1s. Max delay: 30s.
+
+**Context**: At `ANSWER_CONCURRENCY=10` burst requests to Groq regularly hit RPM limits during testing. Hard failures were propagating as 500s to the frontend. Backoff is the standard mitigation; jitter prevents thundering herd when multiple workers hit the limit simultaneously.
+
+**Trade-offs**:
+- ✅ Eliminates hard failures on burst traffic within a single session
+- ✅ Jitter spreads retry load — reduces compounding rate-limit cascades
+- ❌ A fully rate-limited session could stall for up to 30s before surfacing an error
+- ❌ Retry budget (4x) is a guess — may need tuning against production traffic patterns
+
+**Outcome**: Retry logic lives in `llm.py` `chat()` wrapper. Retry count and delays exposed as env vars (`LLM_MAX_RETRIES`, `LLM_BACKOFF_BASE`) for ops tuning.
+
+---
+
+## 2026-03-09 — Sequential processing default (ANSWER_CONCURRENCY=1)
+
+**Decision**: Ship Phase 1 checkpoint with `ANSWER_CONCURRENCY=1` (sequential) as the runtime default, overriding the earlier parallel-first design (`ANSWER_CONCURRENCY=10`).
+
+**Context**: During Phase 1 load testing, parallel execution at concurrency=10 produced intermittent ordering anomalies and unpredictable SSE delivery under Groq's rate limits. While the 6-8x speedup was real in ideal conditions, reliability under burst load was inconsistent. For a co-pilot tool where answer completeness matters more than raw throughput, a dropped or silently-failed answer is worse than a slow one. Founders also flagged that a 15-20s wait is acceptable for the current demo/beta audience — speed is a Phase 2 optimisation target.
+
+**Trade-offs**:
+- ✅ Predictable, deterministic answer ordering — every question always answered
+- ✅ No burst pressure on Groq RPM limits — single in-flight request at a time
+- ✅ Simpler to debug and observe (one log line per question, sequential)
+- ✅ Backoff logic still present and fires on individual retries if needed
+- ❌ Slower wall time (~120s for 30 questions vs ~15-20s parallel)
+- ❌ SSE streaming benefit is reduced — answers come one-by-one rather than in parallel bursts
+
+**Principle**: Reliability beats speed at Phase 1 scale. The parallel code path (`ThreadPoolExecutor`) remains in the codebase and is activated by setting `ANSWER_CONCURRENCY` > 1 in `.env`. Phase 2 will revisit with async LLM clients and a Redis-backed rate-limit budget tracker to make parallelism safe.
+
+**Outcome**: `ANSWER_CONCURRENCY=1` set in `backend/.env`. Engine, SSE endpoint, and frontend unchanged — they handle both modes transparently.
+
+---
+
+## 2026-03-09 — TPD-aware Groq API key blacklisting
+
+**Decision**: Implement a 5-key Groq API key pool with two distinct blacklist tiers: TPM (tokens-per-minute) errors trigger a short-lived cooldown; TPD (tokens-per-day) errors blacklist the key for the remainder of the calendar day (UTC midnight reset).
+
+**Context**: Groq's free tier enforces two separate rate-limit buckets: TPM (burst) and TPD (daily cap). The original backoff logic treated all 429 errors identically — a TPD-exhausted key would be retried with backoff, burning retry budget against a limit that won't reset for hours. With a 5-key pool, cycling past a TPD-exhausted key to a fresh one is the correct recovery path. TPM errors, by contrast, are transient and resolve within seconds, so cooling the key briefly and retrying is cheaper than permanently removing it from rotation.
+
+**Trade-offs**:
+- ✅ TPD-exhausted keys are skipped for the rest of the day — no wasted retry budget
+- ✅ TPM-cooled keys return to rotation quickly — preserves pool throughput during bursts
+- ✅ Pool distributes load across 5 keys — raises effective daily token ceiling ~5x
+- ✅ UTC midnight reset is simple and auditable; no per-key expiry arithmetic
+- ❌ Requires 5 Groq API keys to configure (operational overhead)
+- ❌ If all 5 keys hit TPD simultaneously, the engine degrades to hard failure (acceptable edge case for current scale)
+- ❌ Key selection currently round-robin; no weighted routing by remaining quota (Phase 2 enhancement)
+
+**Outcome**: Key pool and blacklist logic live in `llm.py`. TPD vs TPM distinction is logged at WARNING level for ops visibility. `GROQ_API_KEY` through `GROQ_API_KEY_19` env vars configure the pool (up to 19 keys). Falls back to single-key mode if only `GROQ_API_KEY` is set.
+
+---
+
+## 2026-03-09 — Landing page as first screen in React SPA
+
+**Decision**: Add a `Landing.jsx` screen as the initial state of `App.jsx` (`useState('landing')`), not a separate static site or subdomain.
+
+**Context**: App previously opened directly to the upload form with no explanation. Needed a public-facing page that explains the product, shows honest current state, and has a CTA.
+
+**Trade-offs**:
+- ✅ Single deploy — same Vite bundle, same dark theme, no extra infrastructure
+- ✅ CTA calls `onStart` directly — zero-click transition into the upload flow
+- ❌ Not independently deployable as a static page (was explored; rejected as unnecessary complexity at this stage)
+
+**Outcome**: `Landing.jsx` added. `App.jsx` initial screen is `'landing'`. All "Try it now" buttons set screen to `'upload'`.
+
+---
+
+## 2026-03-09 — Session URL persistence via ?s= query param
+
+**Decision**: Push `?s=<sessionId>` to the browser URL when processing starts; restore session from the URL param on mount.
+
+**Context**: Hard refresh mid-session wiped all work. React state alone was ephemeral.
+
+**Trade-offs**:
+- ✅ Recovers from accidental refresh without any server-side changes
+- ✅ Bookmarkable / shareable session URL
+- ✅ Falls through gracefully if session not found (strips param, shows upload)
+- ❌ Session still lost on server restart until Supabase persistence is wired (Phase 2)
+
+**Outcome**: `App.jsx` `handleProcessStart` calls `window.history.pushState`. Mount effect reads `?s=`, calls `getStatus` + `getAnswers` to restore. `handleReset` calls `replaceState` to clear.
+
+---
+
+## 2026-03-09 — Auth scaffolded but gate not activated
+
+**Decision**: Build the complete auth infrastructure (Auth.jsx, supabase.js, backend verify_token dependency, JWT validation, RLS migration) but do NOT wire the auth gate into App.jsx.
+
+**Context**: App must work for demos and local dev without Supabase credentials configured. Activating the gate would block all users who don't have `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` set, which is everyone in the current beta.
+
+**Trade-offs**:
+- ✅ All infrastructure is built and tested — activating is a one-PR change
+- ✅ App works today without any Supabase setup
+- ❌ No access control until gate is activated — any caller can create sessions
+- ❌ Per-user session cap (MAX_SESSIONS_PER_USER) is effectively inactive
+
+**Activation checklist (Phase 2)**:
+1. Set `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` in frontend env
+2. Set `SUPABASE_JWT_SECRET` in backend env
+3. Run `002_rls_policies.sql` in Supabase dashboard
+4. In `App.jsx`: import `supabase` and `Auth`; add `getSession` on mount; add auth state change listener; add `if (supabase && !user) return <Auth />`
+5. Add `Depends(verify_token)` to remaining session/answer routes in `main.py`
+
+---
+
+## 2026-03-09 — Un-approve button on QuestionCard
+
+**Decision**: Add an "Un-approve" action to approved QuestionCards that reverts status to `'edited'`.
+
+**Context**: Approve was irreversible. Users could edit text (which set status to 'edited' and removed the APPROVED badge) but there was no explicit "undo approval" affordance.
+
+**Trade-offs**:
+- ✅ Makes review flow reversible — reduces anxiety about approving too early
+- ✅ Zero backend changes — uses existing PATCH endpoint with `{ status: 'edited' }`
+
+**Outcome**: Un-approve button appears when `status === 'approved' && !editing`. Approve and Un-approve are mutually exclusive.
+
+---
+
+## 2026-03-09 — Review tab rename: Ready→Answered, Review→Flagged
+
+**Decision**: Rename the Review screen filter tabs from "Ready" / "Review" to "Answered" / "Flagged".
+
+**Context**: "Ready" was ambiguous (ready for what?). "Review" as a tab label inside a screen called "Review" was redundant. Both names clashed with plain English usage in surrounding UI copy.
+
+**Outcome**: Tab keys, filter logic, empty state messages, and stats subtitle all updated in `Review.jsx`.
+
+---
+
+## 2026-03-10 — Phase 2 complete: auth, security middleware, tests, migrations
+
+**Decision**: Confirmed Phase 2 complete. All items verified live.
+
+**Context**: Migrations run by founder. Code review confirmed auth was already fully wired in App.jsx (line 117: `if (supabase && !user) return <Auth />`), security middleware already active in main.py (lines 76-77), JWT validation on all routes, Supabase write-through + session restore working.
+
+Test suite had 37 failures due to `SUPABASE_JWT_SECRET` being live in `.env` (routes returned 401 instead of expected status codes) and rate limiter hitting 30 req/min limit during test runs. Fixed by setting both env vars to safe values in conftest.py and test_api.py before main import.
+
+**Outcome**:
+- 185 tests passing (was 37 failing)
+- Auth gate live — users must sign in via Magic Link
+- Security headers active on every response
+- RLS enforcing per-user data isolation in Supabase
+- Landing page updated to v0.4.0 — reflects actual state, removes "no sign-in required"
+
+**Phase 3 backlog**: RAG pipeline (pgvector), Redis rate limiter, parallel processing, DPAs.

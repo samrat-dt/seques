@@ -11,15 +11,15 @@ Covers:
 from __future__ import annotations
 
 import os
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 # Ensure backend is on the path (conftest.py does this, but be explicit)
-import sys, os as _os
-sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import llm
+import llm  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -42,10 +42,10 @@ class TestGroqProvider:
         assert result == "Yes, we use AES-256."
 
     def test_groq_missing_api_key(self, monkeypatch):
-        """Raises ValueError when GROQ_API_KEY is not set."""
-        monkeypatch.setenv("GROQ_API_KEY", "")
-        with pytest.raises(ValueError, match="GROQ_API_KEY"):
-            llm.chat(system="sys", user="usr", provider="groq")
+        """Raises RuntimeError when no Groq keys are available."""
+        with patch("llm._available_keys", return_value=[]):
+            with pytest.raises(RuntimeError, match="exhausted"):
+                llm.chat(system="sys", user="usr", provider="groq")
 
     def test_groq_uses_correct_model(self):
         """chat() calls Groq with the expected model name."""
@@ -55,8 +55,8 @@ class TestGroqProvider:
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = mock_response
 
-        with patch("llm.os.getenv", side_effect=lambda k, d="": "test_key" if k == "GROQ_API_KEY" else d):
-            with patch("openai.OpenAI", return_value=mock_client):
+        with patch("llm._available_keys", return_value=["test_key"]):
+            with patch("llm._groq_client_for_key", return_value=mock_client):
                 llm.chat(system="sys", user="usr", provider="groq")
 
         call_kwargs = mock_client.chat.completions.create.call_args
@@ -70,8 +70,8 @@ class TestGroqProvider:
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = mock_response
 
-        with patch("llm.os.getenv", side_effect=lambda k, d="": "test_key" if k == "GROQ_API_KEY" else d):
-            with patch("openai.OpenAI", return_value=mock_client):
+        with patch("llm._available_keys", return_value=["test_key"]):
+            with patch("llm._groq_client_for_key", return_value=mock_client):
                 llm.chat(system="my system prompt", user="my user prompt", provider="groq")
 
         messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
@@ -117,8 +117,8 @@ class TestAnthropicProvider:
         mock_client = MagicMock()
         mock_client.messages.create.return_value = mock_response
 
-        with patch("llm.os.getenv", side_effect=lambda k, d="": "test_key" if k == "ANTHROPIC_API_KEY" else d):
-            with patch("anthropic.Anthropic", return_value=mock_client):
+        with patch("llm.os.getenv", side_effect=lambda k, d="": "test_key" if "ANTHROPIC" in k else d):
+            with patch("llm._anthropic_client", return_value=mock_client):
                 llm.chat(system="sys", user="usr", provider="anthropic")
 
         call_kwargs = mock_client.messages.create.call_args

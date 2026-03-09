@@ -7,32 +7,39 @@ ReDoc:       http://localhost:8000/redoc
 OpenAPI JSON: http://localhost:8000/openapi.json
 """
 
+import asyncio
 import io
+import json
 import os
 import tempfile
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+import jwt as pyjwt  # noqa: E402
 
-import analytics
-import audit
-import database
-from engine import answer_question
-from export import export_excel, export_pdf
-from ingest import ingest_docx, ingest_manual, ingest_pdf
-from llm import PROVIDER_KEYS, PROVIDER_MODELS
-from models import Answer, AnswerStatus, AnswerTone, EvidenceCoverage
-from observability import logger
-from parser import parse_excel_questionnaire, parse_pdf_questionnaire, parse_text_questionnaire
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import JSONResponse, StreamingResponse  # noqa: E402
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
+from security import RateLimitMiddleware, SecurityHeadersMiddleware  # noqa: E402
+
+import analytics  # noqa: E402
+import audit  # noqa: E402
+import database  # noqa: E402
+from engine import answer_question, build_doc_context  # noqa: E402
+from export import export_excel, export_pdf  # noqa: E402
+from ingest import ingest_docx, ingest_manual, ingest_pdf  # noqa: E402
+from llm import PROVIDER_KEYS, PROVIDER_MODELS  # noqa: E402
+from models import Answer, AnswerStatus, AnswerTone, EvidenceCoverage  # noqa: E402
+from observability import logger  # noqa: E402
+from parser import parse_excel_questionnaire, parse_pdf_questionnaire, parse_text_questionnaire  # noqa: E402
 # TODO: re-enable after fixing middleware exception handling
 # from observability import RequestTracingMiddleware
 # from security import RateLimitMiddleware, SecurityHeadersMiddleware
@@ -63,10 +70,11 @@ app = FastAPI(
     ],
 )
 
-# TODO (open issue): restore SecurityHeadersMiddleware, RateLimitMiddleware, RequestTracingMiddleware
-# Temporarily disabled — custom middleware was intercepting exceptions before CORS headers
-# could be applied, causing ERR_FAILED on all API calls from the frontend.
-# Tracked in: agents/security/agent.md + agents/shared/decisions.md
+# Middleware order: last added = outermost (processes all requests first, all responses last).
+# CORS must be outermost so it adds headers to every response — including rate-limit rejections.
+# RateLimitMiddleware returns JSONResponse directly (never raises) to stay compatible.
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -74,6 +82,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch-all: ensures unhandled exceptions return JSON with CORS headers applied."""
+    logger.error("unhandled_exception", extra={"path": request.url.path, "error": str(exc)})
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error. Check server logs for details."},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +103,7 @@ class Session:
         self.id = session_id
         self.provider = provider
         self.client_ip = client_ip
+        self.user_id: Optional[str] = None
         self.docs = []
         self.questions = []
         self.answers: Dict[str, Answer] = {}
@@ -99,15 +118,35 @@ class Session:
 
 sessions: Dict[str, Session] = {}
 
+_CONCURRENCY_RAW = int(os.getenv("ANSWER_CONCURRENCY", "1"))
+ANSWER_CONCURRENCY = min(_CONCURRENCY_RAW, 20)
+if _CONCURRENCY_RAW > 20:
+    import warnings
+    warnings.warn(f"ANSWER_CONCURRENCY={_CONCURRENCY_RAW} exceeds max of 20; clamped to 20.")
+
+# Delay between questions to stay well under TPM limits (seconds)
+QUESTION_DELAY_S = float(os.getenv("QUESTION_DELAY_S", "1.5"))
+
+# Dedicated executor for fire-and-forget DB saves — lives outside answer engine
+# so its shutdown doesn't block session.processing = False
+_db_save_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="db-save")
+
 
 def get_session(session_id: str) -> Session:
     session = sessions.get(session_id)
     if not session:
-        # Try to restore from Supabase (handles server restarts)
         session = _restore_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     return session
+
+
+def _assert_owns_session(session: Session, user_id: Optional[str]) -> None:
+    """Raises 403 if auth is enabled and the JWT user does not own this session."""
+    if not _AUTH_ENABLED or user_id is None:
+        return
+    if session.user_id and session.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
 
 
 def _restore_session(session_id: str) -> "Session | None":
@@ -163,6 +202,52 @@ def _restore_session(session_id: str) -> "Session | None":
 
 
 # ---------------------------------------------------------------------------
+# Auth helpers
+# ---------------------------------------------------------------------------
+
+_SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
+_AUTH_ENABLED = bool(_SUPABASE_JWT_SECRET)
+
+# Per-user guardrails (configurable via env)
+MAX_SESSIONS_PER_USER = int(os.getenv("MAX_SESSIONS_PER_USER", "3"))
+MAX_QUESTIONS_PER_SESSION = int(os.getenv("MAX_QUESTIONS_PER_SESSION", "100"))
+
+_bearer_scheme = HTTPBearer(auto_error=False)
+
+# Maps user_id → list of session_ids they own (in-memory; resets on restart)
+_user_sessions: Dict[str, List[str]] = {}
+
+
+def verify_token(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
+) -> Optional[str]:
+    """
+    Validates the Supabase JWT and returns the user's sub (user_id).
+
+    If SUPABASE_JWT_SECRET is not configured, auth is disabled and None is
+    returned — all requests are allowed (Phase 1 / local dev behaviour).
+    """
+    if not _AUTH_ENABLED:
+        return None
+
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Authorization header required")
+
+    try:
+        payload = pyjwt.decode(
+            credentials.credentials,
+            _SUPABASE_JWT_SECRET,
+            algorithms=["HS256"],
+            audience="authenticated",
+        )
+        return payload.get("sub")
+    except pyjwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except pyjwt.InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {exc}")
+
+
+# ---------------------------------------------------------------------------
 # Meta routes
 # ---------------------------------------------------------------------------
 
@@ -191,6 +276,37 @@ def list_providers():
 
 
 # ---------------------------------------------------------------------------
+# Auth endpoint
+# ---------------------------------------------------------------------------
+
+class VerifyTokenBody(BaseModel):
+    token: str
+
+
+@app.post("/api/auth/verify", tags=["meta"], summary="Verify a Supabase JWT")
+def auth_verify(body: VerifyTokenBody):
+    """
+    Accepts a Supabase access token (JWT) and returns the decoded user_id.
+    Use this to confirm the frontend token is valid before making further API calls.
+    Returns 401 if auth is not configured (SUPABASE_JWT_SECRET not set).
+    """
+    if not _AUTH_ENABLED:
+        raise HTTPException(status_code=501, detail="Auth is not configured on this server")
+    try:
+        payload = pyjwt.decode(
+            body.token,
+            _SUPABASE_JWT_SECRET,
+            algorithms=["HS256"],
+            audience="authenticated",
+        )
+        return {"user_id": payload.get("sub"), "email": payload.get("email")}
+    except pyjwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except pyjwt.InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {exc}")
+
+
+# ---------------------------------------------------------------------------
 # Sessions
 # ---------------------------------------------------------------------------
 
@@ -204,19 +320,40 @@ class CreateSessionBody(BaseModel):
     summary="Create a new session",
     status_code=201,
 )
-def create_session(body: Optional[CreateSessionBody] = None, request: Request = None):
+def create_session(
+    body: Optional[CreateSessionBody] = None,
+    request: Request = None,
+    user_id: Optional[str] = Depends(verify_token),
+):
     """
     Creates an isolated session. All uploads and answers are scoped to this session.
     Optionally pass `{"provider": "groq"}` body to override the server default.
 
-    **Phase 2**: sessions will be persisted to Supabase.
+    When auth is enabled, sessions are scoped to the authenticated user and capped
+    at MAX_SESSIONS_PER_USER active sessions (default: 3).
     """
+    # Per-user session cap (only when auth is enabled)
+    if user_id and _AUTH_ENABLED:
+        user_session_ids = _user_sessions.get(user_id, [])
+        active = [sid for sid in user_session_ids if sid in sessions]
+        if len(active) >= MAX_SESSIONS_PER_USER:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Session limit reached ({MAX_SESSIONS_PER_USER} active sessions per user). "
+                       "Export or close an existing session before creating a new one.",
+            )
+
     session_id = str(uuid.uuid4())
     provider = (((body.provider if body else None) or os.getenv("LLM_PROVIDER", "anthropic"))).lower()
     ip = request.client.host if request and request.client else "unknown"
-    sessions[session_id] = Session(session_id, provider, client_ip=ip)
+    sess = Session(session_id, provider, client_ip=ip)
+    sess.user_id = user_id
+    sessions[session_id] = sess
 
-    audit.emit("session.create", actor=ip, resource_type="session", resource_id=session_id,
+    if user_id:
+        _user_sessions.setdefault(user_id, []).append(session_id)
+
+    audit.emit("session.create", actor=user_id or ip, resource_type="session", resource_id=session_id,
                detail={"provider": provider})
     analytics.session_created(session_id, provider, ip)
     logger.info("session_created", extra={"session_id": session_id, "provider": provider})
@@ -248,7 +385,7 @@ MAX_DOC_BYTES = 50 * 1024 * 1024  # 50 MB
     tags=["docs"],
     summary="Upload compliance evidence documents (PDF or Word .docx)",
 )
-async def upload_docs(session_id: str, files: List[UploadFile] = File(...), request: Request = None):
+async def upload_docs(session_id: str, files: List[UploadFile] = File(...), request: Request = None, user_id: Optional[str] = Depends(verify_token)):
     """
     Upload one or more compliance documents (SOC 2, ISO 27001, security policies).
     Supported formats: PDF and Word (.docx). Unsupported types are returned in `skipped`.
@@ -257,6 +394,7 @@ async def upload_docs(session_id: str, files: List[UploadFile] = File(...), requ
     **GDPR note**: document text is held in-memory only and never persisted to disk.
     """
     session = get_session(session_id)
+    _assert_owns_session(session, user_id)
     ip = request.client.host if request and request.client else session.client_ip
 
     added = []
@@ -316,9 +454,10 @@ async def upload_docs(session_id: str, files: List[UploadFile] = File(...), requ
     tags=["docs"],
     summary="Add a compliance document as plain text",
 )
-async def upload_manual_doc(session_id: str, text: str = Form(...), request: Request = None):
+async def upload_manual_doc(session_id: str, text: str = Form(...), request: Request = None, user_id: Optional[str] = Depends(verify_token)):
     """Paste raw text (e.g. a policy excerpt) as a compliance evidence source."""
     session = get_session(session_id)
+    _assert_owns_session(session, user_id)
     ip = request.client.host if request and request.client else session.client_ip
     doc = ingest_manual(text)
     session.docs.append(doc)
@@ -382,6 +521,13 @@ async def upload_questionnaire(
     else:
         raise HTTPException(status_code=400, detail="Provide a file or pasted text")
 
+    if len(questions) > MAX_QUESTIONS_PER_SESSION:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Questionnaire has {len(questions)} questions; maximum is {MAX_QUESTIONS_PER_SESSION}. "
+                   "Split the questionnaire into smaller batches.",
+        )
+
     session.questions = questions
     session.total_questions = len(questions)
     database.save_questions(session_id, questions)
@@ -428,6 +574,8 @@ async def process_questionnaire(
             status_code=400,
             detail=f"{required_key} not configured for provider '{session.provider}'. Set it in backend/.env.",
         )
+    if session.processing:
+        raise HTTPException(status_code=409, detail="Session is already being processed. Wait for it to complete.")
     if not session.docs:
         raise HTTPException(status_code=400, detail="No compliance docs uploaded")
     if not session.questions:
@@ -449,41 +597,61 @@ async def process_questionnaire(
 
 
 def run_answer_engine(session_id: str):
-    """Synchronous worker — runs in FastAPI's thread pool."""
+    """Synchronous worker — runs in FastAPI's thread pool. Answers questions in parallel."""
     session = sessions[session_id]
     error_count = 0
     needs_review_count = 0
 
+    # Build doc context once for all questions (not per-question)
+    doc_context = build_doc_context(session.docs)
+
+    def process_one(question):
+        return question, answer_question(
+            question, session.docs, provider=session.provider, doc_context=doc_context
+        )
+
     try:
-        for question in session.questions:
-            try:
-                answer = answer_question(question, session.docs, provider=session.provider)
-                session.answers[question.id] = answer
-                database.save_answer(session_id, answer)
-                if answer.needs_review:
-                    needs_review_count += 1
-            except Exception as e:
-                error_count += 1
-                logger.error("answer_generation_failed", extra={
-                    "session_id": session_id,
-                    "question_id": question.id,
-                    "error": str(e),
-                })
-                session.answers[question.id] = Answer(
-                    question_id=question.id,
-                    question_text=question.text,
-                    draft_answer="This question requires vendor review. Please provide your response based on your actual security practices.",
-                    evidence_coverage=EvidenceCoverage.none,
-                    coverage_reason="System error during generation",
-                    ai_certainty=0,
-                    certainty_reason=str(e),
-                    evidence_sources=[],
-                    answer_tone=AnswerTone.hedged,
-                    needs_review=True,
-                    status=AnswerStatus.draft,
-                )
-            finally:
-                session.processed_count += 1
+        with ThreadPoolExecutor(max_workers=ANSWER_CONCURRENCY) as executor:
+            futures = {executor.submit(process_one, q): q for q in session.questions}
+            for future in as_completed(futures):
+                question = futures[future]
+                try:
+                    _, answer = future.result()
+                    session.answers[question.id] = answer
+                    if answer.needs_review:
+                        needs_review_count += 1
+
+                    def _on_save_done(fut, qid=question.id):
+                        exc = fut.exception()
+                        if exc:
+                            logger.error("db_save_failed", extra={
+                                "session_id": session_id, "question_id": qid, "error": str(exc)
+                            })
+                    _db_save_executor.submit(database.save_answer, session_id, answer).add_done_callback(_on_save_done)
+                except Exception as e:
+                    error_count += 1
+                    logger.error("answer_generation_failed", extra={
+                        "session_id": session_id,
+                        "question_id": question.id,
+                        "error": str(e),
+                    })
+                    session.answers[question.id] = Answer(
+                        question_id=question.id,
+                        question_text=question.text,
+                        draft_answer="This question requires vendor review. Please provide your response based on your actual security practices.",
+                        evidence_coverage=EvidenceCoverage.none,
+                        coverage_reason="System error during generation",
+                        ai_certainty=0,
+                        certainty_reason=str(e),
+                        evidence_sources=[],
+                        answer_tone=AnswerTone.hedged,
+                        needs_review=True,
+                        status=AnswerStatus.draft,
+                    )
+                finally:
+                    session.processed_count += 1
+                    if QUESTION_DELAY_S > 0:
+                        time.sleep(QUESTION_DELAY_S)
     finally:
         session.processing = False
         duration_ms = int((time.time() - (session.processing_started_at or time.time())) * 1000)
@@ -508,9 +676,10 @@ def run_answer_engine(session_id: str):
     tags=["answers"],
     summary="Poll processing progress",
 )
-def get_status(session_id: str):
+def get_status(session_id: str, user_id: Optional[str] = Depends(verify_token)):
     """Returns current processing state. Poll until `processing: false`."""
     session = get_session(session_id)
+    _assert_owns_session(session, user_id)
     return {
         "processing": session.processing,
         "processed": session.processed_count,
@@ -519,13 +688,60 @@ def get_status(session_id: str):
 
 
 @app.get(
+    "/api/sessions/{session_id}/stream",
+    tags=["answers"],
+    summary="Stream answers via Server-Sent Events as they complete",
+)
+async def stream_answers(session_id: str, user_id: Optional[str] = Depends(verify_token)):
+    """
+    Server-Sent Events endpoint. Emits each answer as JSON as it completes during processing.
+    Sends `data: [DONE]` when all answers are ready.
+    """
+    session = get_session(session_id)
+    _assert_owns_session(session, user_id)
+
+    async def event_generator():
+        seen: set = set()
+        # Wait up to 30s for processing to actually start before giving up
+        waited = 0.0
+        while not session.processing and session.total_questions == 0:
+            await asyncio.sleep(0.5)
+            waited += 0.5
+            if waited >= 30:
+                yield "data: [DONE]\n\n"
+                return
+
+        while True:
+            # Snapshot the dict to avoid RuntimeError on concurrent resize
+            try:
+                snapshot = dict(session.answers)
+            except RuntimeError:
+                snapshot = {}
+            for qid, answer in snapshot.items():
+                if qid not in seen:
+                    seen.add(qid)
+                    yield f"data: {json.dumps(answer.model_dump())}\n\n"
+            if not session.processing and session.total_questions > 0 and len(seen) >= session.total_questions:
+                yield "data: [DONE]\n\n"
+                break
+            await asyncio.sleep(0.3)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get(
     "/api/sessions/{session_id}/answers",
     tags=["answers"],
     summary="Get all questions and AI-generated answers",
 )
-def get_answers(session_id: str):
+def get_answers(session_id: str, user_id: Optional[str] = Depends(verify_token)):
     """Returns the full question list with their draft answers, coverage scores, and review flags."""
     session = get_session(session_id)
+    _assert_owns_session(session, user_id)
     return {
         "questions": [q.model_dump() for q in session.questions],
         "answers": {k: v.model_dump() for k, v in session.answers.items()},
@@ -537,7 +753,7 @@ def get_answers(session_id: str):
     tags=["answers"],
     summary="Edit or approve an answer",
 )
-def update_answer(session_id: str, question_id: str, update: dict, request: Request = None):
+def update_answer(session_id: str, question_id: str, update: dict, request: Request = None, user_id: Optional[str] = Depends(verify_token)):
     """
     Accepts `draft_answer` (string) and/or `status` (draft | edited | approved).
     Editing a draft answer automatically transitions status to `edited`.
@@ -583,9 +799,10 @@ def update_answer(session_id: str, question_id: str, update: dict, request: Requ
     tags=["export"],
     summary="Download filled questionnaire as Excel",
 )
-def download_excel(session_id: str, request: Request = None):
+def download_excel(session_id: str, request: Request = None, user_id: Optional[str] = Depends(verify_token)):
     """Returns an .xlsx file with all questions and approved/edited answers."""
     session = get_session(session_id)
+    _assert_owns_session(session, user_id)
     data = export_excel(session.questions, session.answers)
     analytics.export_downloaded(session_id, "excel", len(session.questions))
     audit.emit("export.download", resource_type="session", resource_id=session_id,
@@ -602,9 +819,10 @@ def download_excel(session_id: str, request: Request = None):
     tags=["export"],
     summary="Download filled questionnaire as PDF",
 )
-def download_pdf(session_id: str, request: Request = None):
+def download_pdf(session_id: str, request: Request = None, user_id: Optional[str] = Depends(verify_token)):
     """Returns a PDF with all questions and approved/edited answers."""
     session = get_session(session_id)
+    _assert_owns_session(session, user_id)
     data = export_pdf(session.questions, session.answers)
     analytics.export_downloaded(session_id, "pdf", len(session.questions))
     audit.emit("export.download", resource_type="session", resource_id=session_id,
@@ -675,13 +893,14 @@ def read_supabase_audit(limit: int = 100, action: str = None):
     tags=["answers"],
     summary="Session summary statistics",
 )
-def session_summary(session_id: str):
+def session_summary(session_id: str, user_id: Optional[str] = Depends(verify_token)):
     """
     Returns aggregate stats for a completed session:
     coverage breakdown, certainty distribution, needs-review count.
     Useful for Mixpanel-style dashboards built on the data.
     """
     session = get_session(session_id)
+    _assert_owns_session(session, user_id)
     answers = list(session.answers.values())
     if not answers:
         return {"total": 0}

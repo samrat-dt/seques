@@ -1,0 +1,62 @@
+# Seques — docker-compose for local development parity
+# Usage:
+#   docker compose up --build
+# Prerequisites:
+#   - backend/.env must exist (copy from backend/.env.example and fill values)
+#   - Supabase migration 001_initial_schema.sql must be run in the Supabase dashboard
+#
+# This file is for LOCAL PARITY only.
+# Production should use a managed container platform (Fly.io, ECS, Cloud Run)
+# with HTTPS termination at the load balancer level.
+
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: seques-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      # Override ENVIRONMENT to reflect the containerised local context.
+      # Keep all secrets in backend/.env — never hardcode here.
+      ENVIRONMENT: development
+    volumes:
+      # Persist the audit log across container restarts.
+      # In production, replace with a cloud log sink (Supabase audit_events / Datadog).
+      - audit_log:/app/audit_log
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  frontend:
+    # Vite dev server — development parity only, not production-grade.
+    # Production: build with `npm run build` and serve from a CDN or nginx.
+    image: node:20-slim
+    container_name: seques-frontend
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "5174:5174"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      # Point the frontend at the backend container by service name.
+      VITE_API_BASE_URL: http://localhost:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  audit_log:
+    driver: local
