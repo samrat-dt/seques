@@ -11,15 +11,15 @@ Covers:
 from __future__ import annotations
 
 import os
+import sys
 from unittest.mock import MagicMock, patch, call
 
 import pytest
 
 # Ensure backend is on the path (conftest.py does this, but be explicit)
-import sys, os as _os
-sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import llm
+import llm  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
