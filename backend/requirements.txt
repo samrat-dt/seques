@@ -13,3 +13,4 @@ numpy
 mixpanel
 supabase
 python-docx
+pytest
