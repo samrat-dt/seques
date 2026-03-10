@@ -7,6 +7,7 @@ import Landing from './screens/Landing'
 import Auth from './screens/Auth'
 import { getStatus, getAnswers, setAuthToken } from './api'
 import { supabase } from './supabase'
+import { Analytics } from '@vercel/analytics/react'
 
 const STEPS = ['upload', 'processing', 'review', 'export']
 const STEP_LABELS = ['Upload', 'Processing', 'Review', 'Export']
@@ -151,6 +152,7 @@ export default function App() {
         <Export sessionId={sessionId} questions={questions} answers={answers}
           onBack={() => setScreen('review')} />
       )}
+      <Analytics />
     </div>
   )
 }
