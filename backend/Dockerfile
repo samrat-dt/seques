@@ -35,7 +35,7 @@ EXPOSE 8000
 
 # Liveness probe — matches GET /health in main.py
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://localhost:'+os.environ.get('PORT','8000')+'/health')"
 
 # Production server: gunicorn + uvicorn workers
 # --timeout 120: LLM calls can take 30-90s; default 30s kills in-flight requests
