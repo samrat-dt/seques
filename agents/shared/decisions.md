@@ -300,3 +300,83 @@ Test suite had 37 failures due to `SUPABASE_JWT_SECRET` being live in `.env` (ro
 - Landing page updated to v0.4.0 — reflects actual state, removes "no sign-in required"
 
 **Phase 3 backlog**: RAG pipeline (pgvector), Redis rate limiter, parallel processing, DPAs.
+
+---
+
+## 2026-03-11 — v1.0.0-stable housekeeping checkpoint
+
+**Context**: Production confirmed working end-to-end. Multiple auth and transport fixes were required to get from Phase 2 (local-validated) to a fully working production deployment. This entry documents those decisions.
+
+---
+
+### Removed Supabase Magic Link auth — replaced with access-code gate
+
+**Decision**: Remove the Supabase Magic Link OTP flow (`Auth.jsx` email input + Supabase client) and replace with a simple access-code gate. The code is checked against a value stored in `VITE_ACCESS_CODE` env var (default: `seques2026`). The code is stored in `localStorage` and sent as the Bearer token on all API requests.
+
+**Context**: Supabase Magic Link was returning "invalid api key" errors in production. The Supabase anon key was set in Vercel env vars but the client was not initialising correctly. Debugging the Supabase Auth integration would have taken significant time with no guaranteed outcome. The product is pre-PMF and doesn't need per-user isolation yet.
+
+**Trade-offs**:
+- ✅ Unblocks production immediately
+- ✅ Zero external dependencies for auth
+- ✅ Trivially overridable via env var for different deployments
+- ❌ Single shared secret — no per-user identity or audit trail
+- ❌ Not suitable for multi-user or team accounts (Phase 3 concern)
+
+**Outcome**: `App.jsx` shows `Auth.jsx` (access-code form) as gate. `supabase.js` exports `null`. Backend `_AUTH_ENABLED=False` by default.
+
+---
+
+### Replaced SSE/EventSource with polling in Processing screen
+
+**Decision**: Rewrite `Processing.jsx` to poll `GET /api/sessions/{id}/status` at 1-second intervals instead of opening an `EventSource` SSE connection to `/api/sessions/{id}/stream`.
+
+**Context**: The browser's `EventSource` API does not support custom request headers. Since all backend routes require `Authorization: Bearer <token>`, the SSE connection returned 401 immediately. There is no way to pass headers with `EventSource` in any browser. The SSE endpoint remains in the backend for potential future use (e.g., with a token-in-query-string workaround), but polling is the correct client-side approach when auth headers are required.
+
+**Trade-offs**:
+- ✅ Works correctly in production with auth
+- ✅ Simpler to reason about and debug
+- ❌ Slightly less real-time than SSE (1s poll interval vs push)
+- ❌ Higher request volume (one poll per second per active session)
+
+**Outcome**: `Processing.jsx` uses `setInterval` polling. SSE endpoint (`/api/sessions/{id}/stream`) remains in `main.py` but is unused by the frontend.
+
+---
+
+### Replaced direct href export downloads with fetch() + blob
+
+**Decision**: Rewrite export download buttons in `Export.jsx` to use `fetch()` + `URL.createObjectURL(blob)` + programmatic click, instead of rendering `<a href="/api/sessions/{id}/export/excel">`.
+
+**Context**: Direct `<a href>` links for downloads bypass the JavaScript layer entirely — the browser makes the GET request without any custom headers. Since export routes require `Authorization: Bearer <token>`, direct links returned 401. The fetch+blob pattern is the standard workaround: fetch with headers, receive the binary response, create a local object URL, and trigger a programmatic anchor click.
+
+**Trade-offs**:
+- ✅ Works correctly in production with auth
+- ✅ Enables download progress tracking if needed in future
+- ❌ Slightly more code than a simple anchor tag
+- ❌ Object URL must be revoked after use to avoid memory leaks (handled)
+
+**Outcome**: `Export.jsx` download buttons use fetch+blob. `api.js` exports a `downloadExport(sessionId, format, token)` helper.
+
+---
+
+### Created v1.0.0-stable git tag as checkpoint
+
+**Decision**: Tag the current commit as `v1.0.0-stable` to mark the first fully working end-to-end production deployment.
+
+**Context**: The codebase has been through Phase 1 (MVP), Phase 2 (auth + persistence), and several production fixes. This tag is the stable baseline for Phase 3 work.
+
+**Outcome**: `git tag v1.0.0-stable` on main branch.
+
+---
+
+### Backend _AUTH_ENABLED=False by default
+
+**Decision**: Set `_AUTH_ENABLED = False` as the default in `main.py`. JWT validation on routes is only activated when `AUTH_ENABLED=true` is set as an environment variable (in addition to `SUPABASE_JWT_SECRET`).
+
+**Context**: In production the frontend uses access-code auth, not JWT. The backend JWT validation infrastructure exists and is correct, but enabling it would require every request to carry a valid Supabase JWT — which is no longer how the frontend authenticates. Keeping it off by default means the backend accepts the Bearer access-code token without trying to validate it as a JWT.
+
+**Trade-offs**:
+- ✅ Backend and frontend auth models are consistent
+- ✅ JWT validation can be re-enabled for proper multi-user auth in Phase 3
+- ❌ Backend routes are not per-user isolated (acceptable at current scale)
+
+**Outcome**: `_AUTH_ENABLED = False` in `main.py`. `AUTH_ENABLED=true` env var activates JWT validation when Supabase Auth is properly wired.

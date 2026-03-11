@@ -1,5 +1,5 @@
 # Seques — Architecture Reference
-Last updated: 2026-03-09
+Last updated: 2026-03-11
 
 ---
 
@@ -8,36 +8,48 @@ Last updated: 2026-03-09
 ```
 ┌──────────────────────────────────────────────────────────┐
 │                    User Browser                          │
-│  React + Vite + Tailwind  (localhost:5173)               │
+│  React + Vite + Tailwind  (https://seques.vercel.app)    │
 │                                                          │
-│  Screens: Upload → Processing (poll) → Review → Export   │
+│  Auth: access-code gate (localStorage; Auth.jsx)         │
+│  Every request: Authorization: Bearer <code>             │
+│                                                          │
+│  Screens: Landing → Auth → Upload → Processing → Review → Export
+│  Processing: polling GET /api/sessions/{id}/status (1s)  │
+│  Export: fetch()+blob (not direct <a href> links)        │
 └─────────────────────────┬────────────────────────────────┘
-                          │ HTTP (CORS)
+                          │ HTTPS (CORS)
                           ▼
 ┌──────────────────────────────────────────────────────────┐
-│              FastAPI Backend  (localhost:8000)            │
+│   FastAPI Backend  (https://seques-backend-production    │
+│                     .up.railway.app)                     │
+│                                                          │
+│  _AUTH_ENABLED = False  (accepts any Bearer token;       │
+│   JWT validation off — set AUTH_ENABLED=true to enable)  │
 │                                                          │
 │  Middleware stack (outermost → innermost):               │
 │    RequestTracingMiddleware  — X-Request-ID header       │
 │    SecurityHeadersMiddleware — HSTS, CSP, X-Frame etc.   │
 │    RateLimitMiddleware       — 30 req/min per IP         │
-│    CORSMiddleware            — localhost:5173/3000        │
+│    CORSMiddleware            — configured origins        │
 │                                                          │
 │  Routes:                                                 │
 │    GET  /health                                          │
 │    GET  /api/providers                                   │
 │    POST /api/sessions                  → create session  │
-│    POST /api/sessions/{id}/docs        → ingest PDFs/DOCX │
+│    POST /api/sessions/{id}/docs        → ingest PDFs/DOCX│
 │    POST /api/sessions/{id}/manual-doc  → ingest text     │
 │    POST /api/sessions/{id}/questionnaire → parse Q's     │
 │    POST /api/sessions/{id}/process     → kick off AI     │
 │    GET  /api/sessions/{id}/status      → poll progress   │
-│    GET  /api/sessions/{id}/stream      → SSE answer feed │
+│    GET  /api/sessions/{id}/stream      → SSE (unused*)   │
 │    GET  /api/sessions/{id}/answers     → fetch results   │
 │    PATCH /api/sessions/{id}/answers/{qid} → edit/approve │
 │    GET  /api/sessions/{id}/export/excel                  │
 │    GET  /api/sessions/{id}/export/pdf                    │
 │    GET  /api/audit                     → audit log read  │
+│                                                          │
+│  * SSE endpoint exists but frontend uses polling instead │
+│    (EventSource cannot send Authorization headers)       │
 │                                                          │
 │  Swagger UI:  /docs                                      │
 │  ReDoc:       /redoc                                     │
@@ -45,9 +57,11 @@ Last updated: 2026-03-09
 └──────┬──────────────┬───────────────┬────────────────────┘
        │              │               │
        ▼              ▼               ▼
-  LLM Provider   Mixpanel        audit.log (disk)
-  (Groq/Google/  (analytics      append-only JSON
-   Anthropic)     events)        one line per event
+  LLM Provider   Mixpanel        audit.log (disk)        Supabase DB
+  Groq (default) (analytics      append-only JSON        sessions, questions,
+  Anthropic      events)        one line per event       answers, audit_events
+  (Google: not
+   configured)
 ```
 
 ---
@@ -56,13 +70,14 @@ Last updated: 2026-03-09
 
 | File | Purpose |
 |---|---|
-| `main.py` | FastAPI app, all routes, middleware wiring |
+| `main.py` | FastAPI app, all routes, middleware wiring, `_AUTH_ENABLED=False` |
 | `engine.py` | `answer_question()` — draft-first answer generation; dynamic context scaling; domain knowledge fallback |
 | `parser.py` | `parse_pdf/excel/text_questionnaire()` — extracts questions |
 | `ingest.py` | `ingest_pdf/ingest_docx/manual()` — extracts text from PDF and DOCX, detects doc type |
-| `llm.py` | `chat()` — unified LLM wrapper (Anthropic / Groq / Google) |
+| `llm.py` | `chat()` — unified LLM wrapper (Groq / Anthropic); key pool; exponential backoff |
 | `models.py` | Pydantic data models |
 | `export.py` | Excel and PDF export |
+| `database.py` | Supabase CRUD; graceful fallback if not configured |
 | `observability.py` | JSON logging, `RequestTracingMiddleware` |
 | `audit.py` | Immutable audit event writer |
 | `analytics.py` | Mixpanel wrapper (typed event helpers) |
@@ -73,46 +88,71 @@ Last updated: 2026-03-09
 ## Data Flow — Single Question Answered
 
 ```
-1. User uploads SOC2.pdf and/or Policy.docx
-   → ingest_pdf() / ingest_docx() extracts text → ComplianceDoc in session.docs
-   → Unsupported file types are returned in the "skipped" list
+1. User enters access code → stored in localStorage as seques_auth_token
+   Every subsequent request includes: Authorization: Bearer <code>
 
-2. User pastes/uploads questionnaire
+2. User uploads SOC2.pdf and/or Policy.docx
+   → ingest_pdf() / ingest_docx() extracts text → ComplianceDoc in session.docs
+   → Unsupported file types returned in the "skipped" list
+
+3. User pastes/uploads questionnaire
    → parser.py calls llm.chat() → returns JSON array of Question objects
    → stored in session.questions
 
-3. User clicks "Process"
+4. User clicks "Process"
    → POST /process → background task runs run_answer_engine()
-   → build_doc_context() is called ONCE for all questions (not per-question)
-   → Questions are dispatched to a ThreadPoolExecutor (default ANSWER_CONCURRENCY=10 workers)
-   → Each worker thread runs answer_question() in parallel:
+   → build_doc_context() called ONCE for all questions (not per-question)
+   → Questions dispatched sequentially (ANSWER_CONCURRENCY=1 default)
+   → For each question, answer_question() runs:
        a. engine.py builds a prompt using a "senior security compliance consultant"
           system persona with embedded SOC 2 / ISO 27001 framework knowledge and
           the pre-built shared doc context
        b. If uploaded docs lack relevant text, engine falls back to domain
           knowledge — answer_tone is always "assertive" or "hedged";
           "cannot_answer" is never emitted
-       c. llm.chat() sends to chosen provider (max_tokens: 2048)
+       c. llm.chat() sends to chosen provider (dynamic max_tokens per format)
        d. Provider returns JSON with draft_answer, certainty, coverage
        e. engine.py validates + creates Answer object
-       f. session.answers[question.id] = answer  (written as each future completes)
+       f. session.answers[question.id] = answer; written to Supabase DB
    → On completion: audit.emit("processing.complete"), analytics.processing_completed()
 
-4. Frontend receives answers in real time via SSE or by polling
-   Option A — SSE (preferred): GET /api/sessions/{id}/stream
-     → Streams each Answer as a JSON SSE event as soon as it completes
-     → Sends `data: [DONE]` sentinel when all answers are ready
-     → Allows the Review screen to render answers incrementally
-   Option B — Polling: GET /api/sessions/{id}/status until processing=false
-     → Returns { processing, processed, total } for a progress indicator
-   → Renders QuestionCard for each answer
+5. Frontend polls GET /api/sessions/{id}/status at 1-second intervals
+   → Returns { processing, processed, total } for a progress indicator
+   → When processing=false and processed>0: frontend calls getAnswers() then proceeds
+   → Note: SSE endpoint (/stream) exists but is NOT used — EventSource cannot
+     send Authorization headers, so it returned 401 in production
 
-5. User edits or approves
+6. User edits or approves
    → PATCH /answers/{id} → audit.emit("answer.update")
 
-6. User clicks Export
-   → GET /export/excel or /export/pdf → download
+7. User clicks Export
+   → frontend: fetch() with Authorization header → receive binary response
+   → creates blob URL → programmatic anchor click → download
+   → Note: direct <a href> links are NOT used — they bypass JS and can't include
+     auth headers, so they returned 401 in production
 ```
+
+---
+
+## Auth Architecture
+
+### Frontend
+- `supabase.js` exports `null` — Supabase JS client is intentionally disabled
+- `Auth.jsx` is a simple access-code entry form (not Supabase Magic Link)
+- Code is stored in `localStorage` as `seques_auth_token`
+- `getAuthToken()` in `api.js` reads this value and includes it in every request header
+
+### Backend
+- `_AUTH_ENABLED = False` in `main.py` (hardcoded default)
+- Backend accepts any Bearer token without JWT validation
+- JWT validation infrastructure exists and is correct; activate with:
+  - Set `AUTH_ENABLED=true` env var on Railway
+  - Set `SUPABASE_JWT_SECRET` env var on Railway
+
+### Why these choices were made
+- Supabase Magic Link returned "invalid api key" in production despite env vars being set
+- EventSource (SSE) cannot send `Authorization` headers in any browser — polling is the correct workaround
+- Direct `<a href>` export links bypass the JavaScript layer — fetch+blob is required for authenticated downloads
 
 ---
 
@@ -135,7 +175,7 @@ Total context across all docs is capped at 96,000 chars to stay within LLM conte
 
 - **System role**: "senior security compliance consultant" persona
 - **User prompt**: includes SOC 2 and ISO 27001 framework knowledge so the model can reason about standard controls even when uploaded docs are sparse
-- **max_tokens**: 2,048 (doubled from original 1,024)
+- **max_tokens**: dynamic per format (yes_no: 512, multiple_choice: 768, short_text: 1024, long_text: 2048)
 
 ### answer_tone Values
 
@@ -152,18 +192,23 @@ Total context across all docs is capped at 96,000 chars to stay within LLM conte
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `LLM_PROVIDER` | No | `anthropic` | Active LLM provider |
+| `LLM_PROVIDER` | No | `groq` | Active LLM provider (`groq` or `anthropic`) |
+| `GROQ_API_KEY` | If using Groq | — | Groq API key; also `GROQ_API_KEY_2` … `GROQ_API_KEY_19` |
 | `ANTHROPIC_API_KEY` | If using Anthropic | — | Anthropic API key |
-| `GROQ_API_KEY` | If using Groq | — | Groq API key |
-| `GOOGLE_API_KEY` | If using Google | — | Google AI Studio key |
+| `GOOGLE_API_KEY` | If using Google | — | Google AI Studio key (not configured in production) |
+| `AUTH_ENABLED` | No | unset (off) | Set to `true` to activate JWT validation; requires `SUPABASE_JWT_SECRET` |
+| `SUPABASE_URL` | No | — | Supabase project URL; enables DB persistence |
+| `SUPABASE_SERVICE_KEY` | No | — | Supabase service role key |
+| `SUPABASE_JWT_SECRET` | No | — | Required only when `AUTH_ENABLED=true` |
 | `MIXPANEL_TOKEN` | No | — | Mixpanel project token |
-| `SUPABASE_URL` | No (Phase 2) | — | Supabase project URL |
-| `SUPABASE_SERVICE_KEY` | No (Phase 2) | — | Supabase service role key |
 | `LOG_LEVEL` | No | `INFO` | Logging verbosity |
-| `ENVIRONMENT` | No | `development` | Affects CSP/HSTS headers |
+| `ENVIRONMENT` | No | `development` | Affects CSP/HSTS headers; set `production` on Railway |
 | `APP_VERSION` | No | `1.0.0` | Emitted in every log line |
-| `RATE_LIMIT_PER_MINUTE` | No | `30` | Requests/min per IP (mutations) |
-| `ANSWER_CONCURRENCY` | No | `10` | Max parallel LLM calls during processing (ThreadPoolExecutor workers) |
+| `RATE_LIMIT_PER_MINUTE` | No | `30` | Requests/min per IP |
+| `ANSWER_CONCURRENCY` | No | `1` | Max parallel LLM calls; sequential by default |
+| `QUESTION_DELAY_S` | No | `1.5` | Pause between sequential LLM calls (TPM headroom) |
+| `DOC_CHAR_BUDGET` | No | `32000` | Total chars across all uploaded docs |
+| `DOC_CHAR_LIMIT` | No | `16000` | Max chars per individual doc |
 | `AUDIT_LOG_PATH` | No | `audit.log` | Path to audit log file |
 
 ---
@@ -172,9 +217,9 @@ Total context across all docs is capped at 96,000 chars to stay within LLM conte
 
 | Provider | Model | Cost/run est. | Context | Notes |
 |---|---|---|---|---|
-| Groq | llama-3.3-70b-versatile | Free tier | 128K | Fast, generous free tier |
-| Google | gemini-2.0-flash | Free tier | 1M | Largest context window |
-| Anthropic | claude-haiku-4-5 | ~$0.11/run | 200K | Most reliable JSON output |
+| Groq | llama-3.3-70b-versatile | Free tier | 128K | Fast, generous free tier; default |
+| Anthropic | claude-haiku-4-5-20251001 | ~$0.11/run | 200K | Most reliable JSON output |
+| Google | gemini-2.0-flash | Free tier | 1M | Not configured in production |
 
 ---
 
@@ -187,18 +232,18 @@ Total context across all docs is capped at 96,000 chars to stay within LLM conte
 | Type | Handler | Notes |
 |---|---|---|
 | `.pdf` | `ingest_pdf()` | Uses PyMuPDF / pdfplumber |
-| `.docx` | `ingest_docx()` | Uses `python-docx`; added 2026-03-08 |
+| `.docx` | `ingest_docx()` | Uses `python-docx`; text boxes and complex tables not extracted |
 | Pasted text | `ingest_manual()` | Plain text via API body |
 
 Unsupported file types are not silently dropped — the `POST /api/sessions/{id}/docs` endpoint returns a `skipped` list in the response body identifying any files that could not be processed.
 
 ---
 
-## Phase 2 Priorities
+## Phase 3 Priorities
 
-1. **Authentication** — Supabase Auth (magic link or Google OAuth)
-2. **Persistence** — Supabase Postgres for sessions, answers, audit events
-3. **RAG** — vector embeddings for large compliance docs; current approach scales to ~40k chars/doc / 96k total without RAG
-4. **SIEM** — ship `audit.log` to Datadog / Logtail
-5. **Redis** — replace in-memory rate limiter for distributed deployments
-6. **Background jobs** — Celery/RQ instead of FastAPI background tasks for reliability
+1. **RAG** — chunk compliance docs, embed with a small model, store vectors in Supabase pgvector. Retrieve top-k chunks per question. Removes 32KB ceiling.
+2. **Parallel processing** — revisit `ANSWER_CONCURRENCY > 1` with async LLM clients and Redis rate-budget tracking. Goal: reliable 10× concurrency.
+3. **Redis** — replace in-memory rate limiter for distributed deployments.
+4. **Multi-user accounts** — invite-based auth, per-user JWT, session isolation.
+5. **Session history** — list and re-open past sessions.
+6. **Answer templates** — pre-load standard approved language per control domain.

@@ -1,192 +1,146 @@
 # Seques — Shared Project State
 > Updated by any agent after significant changes. Read before acting.
 
-Last updated: 2026-03-10
+Last updated: 2026-03-11
 Updated by: Orchestrator
 
 ## Current Status
 | Area | Status | Owner Agent |
 |---|---|---|
-| Backend API | Running on :8001 — sequential + streaming (ANSWER_CONCURRENCY=1) | backend |
-| Frontend UI | Running on :5175 — auth gate live, landing updated (v0.4.0) | frontend |
+| Backend API | Production — Railway (Docker) — https://seques-backend-production.up.railway.app | backend |
+| Frontend UI | Production — Vercel (auto-deploy from main) — https://seques.vercel.app | frontend |
+| Auth | Access-code gate (default: seques2026, overridable via VITE_ACCESS_CODE) — App.jsx | frontend |
+| LLM | Groq (llama-3.3-70b-versatile, default) + Anthropic (claude-haiku-4-5-20251001, configured) | backend |
+| Supabase DB | Live — sessions, questions, answers, audit_events tables active | infra |
+| Security middleware | Active — SecurityHeadersMiddleware + RateLimitMiddleware (30 req/min per IP) | backend |
 | Mixpanel | Live | infra |
-| Supabase | Migrations run (001 + 002) ✓ — schema + RLS live | infra |
-| Auth | Live — Magic Link gate in App.jsx, JWT validation on all routes | backend/frontend |
-| Security middleware | Live — SecurityHeadersMiddleware + RateLimitMiddleware active | backend |
-| Test suite | Green — 185 tests passing | testing |
-| RAG | Phase 3 | backend |
-| CI/CD | Set up | infra |
+| JWT/backend auth | DISABLED — _AUTH_ENABLED=False in main.py; re-enable with AUTH_ENABLED=true + SUPABASE_JWT_SECRET | backend |
+| Google LLM | Not configured — no API key on Railway | backend |
+| SSE endpoint | Exists in backend but NOT used by frontend | backend |
+| RAG | Phase 3 backlog | backend |
+| Redis | Phase 3 backlog | infra |
 | DPAs | Not signed (pre-launch blocker) | compliance |
-| Privacy notice | Not written | compliance |
+
+## Version
+**v1.0.0-stable** — git tag created, confirmed working end-to-end in production.
+
+## Deployment
+| Service | URL | Platform |
+|---|---|---|
+| Frontend | https://seques.vercel.app | Vercel, auto-deploy from main |
+| Backend | https://seques-backend-production.up.railway.app | Railway, Docker |
 
 ## Phase 1 — COMPLETE (v0.3.0-checkpoint)
-**Checkpoint tagged**: `v0.3.0-checkpoint`
-**Servers**: backend :8001, frontend :5175
+See decisions.md for full history. Key items:
+- Multi-provider LLM, draft-first answer generation, sequential processing, SSE endpoint
+- Landing page, Upload, Processing (then SSE, now polling), Review, Export screens
+- Audit log, Mixpanel analytics, security headers
 
-### Everything shipped in Phase 1
-- [x] Multi-provider LLM abstraction (Groq default, Google, Anthropic)
-- [x] In-memory session store with Supabase dual-write ready
-- [x] Append-only audit log (local file + Supabase)
-- [x] Mixpanel analytics (PII-free)
-- [x] Security headers middleware (Python 3.9 compat)
-- [x] Draft-first answer generation — every question gets a professional draft
-- [x] Dynamic context budget — 40k per doc / 96k total (was 8k)
-- [x] Multi-doc upload — PDF and .docx support
-- [x] Sample 30-question test questionnaire in `docs/`
-- [x] Parallel answer generation via ThreadPoolExecutor (`ANSWER_CONCURRENCY`)
-- [x] SSE streaming — answers appear progressively in the UI
-- [x] Dynamic `max_tokens` per answer format (yes_no → 512, long_text → 2048)
-- [x] Persistent LLM clients with connection pooling
-- [x] Exponential backoff on rate-limit errors (4 retries, jitter)
-- [x] 5-key Groq API key pool with TPD-aware blacklisting
-- [x] Sequential processing mode (`ANSWER_CONCURRENCY=1`) — reliability default
-- [x] Dark UI merged
-- [x] CI/CD pipeline set up
-- [x] Landing page added as first screen in the React SPA (not a separate static page)
-- [x] Session URL persistence via `?s=<sessionId>` query param — restores directly to Review on reload
-- [x] Un-approve button on QuestionCard — reverts approved answer back to edited state
-- [x] Review tab rename: "Ready" → "Answered", "Review" → "Flagged"
-- [x] Auth.jsx (magic link) and supabase.js scaffolded for Phase 2 — not wired into app flow
+## Phase 2 — COMPLETE (v0.4.0, 2026-03-10)
+- Supabase migrations run (001 + 002)
+- Auth gate attempted (Supabase Magic Link) — later removed, replaced with access-code
+- Security middleware active
+- Supabase write-through persistence + session restore
 
-### Performance Benchmarks (Phase 1 final)
-| Metric | Before | After | Delta |
-|---|---|---|---|
-| 30-question session time | ~120s | ~15-20s | 6-8x faster (parallel) |
-| Answer concurrency | 1 (sequential) | 1 (sequential, reliability default) | stable |
-| max_tokens yes/no | 2048 (hardcoded) | 512 (dynamic) | -75% tokens |
-| LLM client init | per-request | persistent pool | eliminated overhead |
-| Rate limit handling | hard fail | exp. backoff + jitter | resilient |
-| Doc context per session | 8k | 96k total / 40k per doc | 12x more content |
+## v1.0.0-stable — CONFIRMED WORKING (2026-03-11)
 
-## Frontend Screen Inventory (ground truth as of 2026-03-09)
+### What is working in production
+- [x] Access-code auth gate (localStorage, default: seques2026)
+- [x] Upload compliance docs — PDF, DOCX, up to 50MB
+- [x] Upload questionnaire — PDF, Excel, pasted text
+- [x] AI answer generation — Groq (default) + Anthropic (configured)
+- [x] Processing screen — polling-based at 1s interval (NOT SSE)
+- [x] Review + edit + approve + un-approve answers
+- [x] Export to Excel and PDF (fetch-based with auth token, not direct links)
+- [x] Sessions persist to Supabase DB
+- [x] Rate limiting: 30 req/min per IP (in-memory)
+- [x] Security headers active
+
+### What is NOT active
+- Supabase magic link auth: REMOVED (broken "invalid api key"), replaced with access-code
+- JWT/Supabase auth on backend: DISABLED (_AUTH_ENABLED=False by default)
+- Google LLM: not configured (no API key on Railway)
+- SSE stream endpoint: exists in backend but not used by frontend (EventSource can't send auth headers)
+- RAG: not implemented (32KB doc limit applies)
+- Redis: not implemented (in-memory rate limiter)
+- Parallel processing: ANSWER_CONCURRENCY=1 (sequential default)
+
+## Frontend Screen Inventory (ground truth as of 2026-03-11)
 
 ### App flow
-`landing` → `upload` → `processing` → `review` → `export`
+`landing` → `auth` (access-code gate) → `upload` → `processing` → `review` → `export`
 
 State lives in `App.jsx`. No router library. Screen is a string state variable.
-
-### Landing (`screens/Landing.jsx`)
-- First screen shown on app load (`useState('landing')` initial value)
-- Marketing page: hero headline, v0.3.0 highlights, "Where we are today", Phase 2 roadmap, CTA
-- Two "Try it now →" buttons and a nav button all call `onStart` which sets screen to `upload`
-- No auth gate here — anyone can proceed
-- Footer: © 2026 Seques, contact link to access@seques.ai
-
-### Upload (`screens/Upload.jsx`)
-- Fetches available LLM providers from `/api/providers` on mount; renders a provider selector
-- Left panel: compliance docs (PDF/.docx) — drag-and-drop or file browse, multi-file, removable
-- Right panel: prospect questionnaire — PDF/.xlsx/.xls upload OR paste text; mutually exclusive
-- "Run it →" button disabled until at least 1 doc + questionnaire present
-- On submit: `createSession` → `uploadDocs` → `uploadQuestionnaire` → `processQuestionnaire` → calls `onStart(sessionId)` which pushes `?s=<sessionId>` to URL and advances to `processing`
+Auth check is access-code stored in localStorage; `Auth.jsx` is a simple code-entry form.
 
 ### Processing (`screens/Processing.jsx`)
-- Terminal-style log panel with macOS traffic-light chrome
-- Opens an `EventSource` SSE connection to `/api/sessions/<id>/stream`
-- Parses each SSE event as JSON (one answer); increments counter and updates "Answering X of Y..." line
-- Polls `/api/sessions/<id>/status` at 800ms intervals to discover total question count early
-- On `[DONE]` event: calls `getAnswers` then fires `onDone(data)` which advances to `review`
-- Error state shows "Something broke. Try again →" with `window.location.reload()`
-
-### Review (`screens/Review.jsx`)
-- Four filter tabs: **All**, **Answered**, **Flagged**, **Gaps**
-  - "Answered" = `!needs_review && evidence_coverage !== 'none'`
-  - "Flagged" = `needs_review === true`
-  - "Gaps" = `evidence_coverage === 'none'`
-- Header shows counts: total / answered / flagged / gaps / approved
-- "Export →" button advances to export screen
-- Renders `QuestionCard` for each filtered question
-
-### QuestionCard (`components/QuestionCard.jsx`)
-- Left-border accent: green=approved, blue=edited, amber=needs_review, grey=default
-- Header badges: APPROVED (green), EDITED (blue), REVIEW (amber) — mutually exclusive priority
-- Actions (top-right):
-  - **Edit** button — always shown when not editing; opens inline textarea
-  - **Un-approve** button — shown only when `status === 'approved'` and not editing; calls `onUpdate({ status: 'edited' })`
-  - **Approve** button — shown only when `status !== 'approved'` and not editing; calls `onUpdate({ status: 'approved' })`
-- Edit mode: textarea pre-filled with `draft_answer`; Save calls `onUpdate({ draft_answer, status: 'edited' })`, Cancel dismisses
-- Footer metadata: evidence source file chips, coverage badge (Covered/Partial/No evidence), AI certainty %
-- Suggested addition callout (info box with bulb icon) if `suggested_addition` present
-- Coverage reason and certainty reason shown as italic muted text if present
+- Terminal-style log panel
+- Polls `/api/sessions/<id>/status` at 1s intervals (NOT SSE/EventSource)
+- Reason: EventSource cannot send Authorization headers → 401 in production
+- On `processing === false && processed > 0`: calls `getAnswers` then fires `onDone(data)`
 
 ### Export (`screens/Export.jsx`)
-- Stats: approved count / total / gaps (gaps column shown only if > 0)
-- Warning callouts: amber if any unapproved, red if any gaps
-- Download buttons: "Download Excel" (primary amber), "Download PDF" (secondary surface)
-- "← Back to review" text button
-- Note: Export counts approved as `status === 'approved' || status === 'edited'`
-
-### Session URL persistence (in `App.jsx`)
-- On `handleProcessStart`: `window.history.pushState({}, '', ?s=${sid})`
-- On mount: reads `?s=` param, calls `getStatus` — if `!processing && processed > 0` loads answers and jumps to `review`; on error strips the param
-- On reset (`handleReset`): `window.history.replaceState({}, '', pathname)` to clear param
-
-### Auth status
-- `Auth.jsx` exists: Supabase magic link OTP flow, email input, "Check your email" confirmation state
-- `supabase.js`: exports `supabase = (url && anonKey) ? createClient(url, anonKey) : null` — gracefully null when env vars absent
-- `App.jsx` does NOT import Auth.jsx or supabase.js — **there is no auth gate in the running app**
-- Auth is infrastructure for Phase 2; the app runs fully without Supabase env vars configured
+- Download buttons use `fetch()` + blob URL (NOT direct `<a href>` links)
+- Reason: direct links can't include the Authorization header → 401 in production
+- Both Excel and PDF exports use `getAuthToken()` helper from api.js
 
 ### api.js
-- `setAuthToken(token)` is implemented and exported — sets `_authToken` module variable
-- Every `request()` call includes `Authorization: Bearer <token>` header if `_authToken` is set
-- No code in the app currently calls `setAuthToken()` — it will be wired up when auth lands
-- Exports: `getProviders`, `createSession`, `uploadDocs`, `uploadQuestionnaire`, `processQuestionnaire`, `getStatus`, `getAnswers`, `updateAnswer`, `getExcelUrl`, `getPdfUrl`
+- `getAuthToken()` reads access code from localStorage
+- Every request includes `Authorization: Bearer <token>` header
+- Exports: `getProviders`, `createSession`, `uploadDocs`, `uploadQuestionnaire`, `processQuestionnaire`, `getStatus`, `getAnswers`, `updateAnswer`, `downloadExport` (fetch+blob)
 
-## Frontend Dependencies (package.json)
-| Package | Version |
+### supabase.js
+- Exports `null` — Supabase client disabled (env vars set but client intentionally null)
+- App.jsx does NOT use Supabase client for auth
+
+## Backend Key Facts (as of 2026-03-11)
+- `main.py`: `_AUTH_ENABLED = False` (hardcoded default); set `AUTH_ENABLED=true` env var to enable JWT
+- `security.py`: SecurityHeadersMiddleware + RateLimitMiddleware active
+- `engine.py`: sequential processing (ANSWER_CONCURRENCY=1)
+- `database.py`: Supabase CRUD with graceful fallback if not configured
+- LLM_PROVIDER: groq (default); ANTHROPIC_API_KEY configured on Railway
+
+## Environment Variables — Production State
+
+### Backend (Railway)
+| Var | Status |
 |---|---|
-| react | ^18.2.0 |
-| react-dom | ^18.2.0 |
-| @supabase/supabase-js | ^2.98.0 |
-| lucide-react | ^0.344.0 |
-| vite | ^5.1.4 |
-| @vitejs/plugin-react | ^4.2.1 |
-| tailwindcss | ^3.4.1 |
-| autoprefixer | ^10.4.18 |
-| postcss | ^8.4.35 |
+| GROQ_API_KEY | Configured |
+| ANTHROPIC_API_KEY | Configured |
+| SUPABASE_URL | Configured |
+| SUPABASE_SERVICE_KEY | Configured |
+| SUPABASE_JWT_SECRET | Configured but AUTH_ENABLED not set → auth off |
+| LLM_PROVIDER | groq |
+| ENVIRONMENT | production |
+| ANSWER_CONCURRENCY | 1 |
 
-Note: `lucide-react` is installed but not used in any screen file (icons are inline SVGs). It may be a dependency kept for future use or a leftover.
+### Frontend (Vercel)
+| Var | Status |
+|---|---|
+| VITE_API_URL | https://seques-backend-production.up.railway.app |
+| VITE_SUPABASE_URL | Set but Supabase client exports null |
+| VITE_SUPABASE_ANON_KEY | Set but Supabase client exports null |
+| VITE_ACCESS_CODE | Not set — defaults to seques2026 in code |
 
-## Phase 2 — COMPLETE (2026-03-10)
-
-- [x] Run Supabase migrations (001 + 002)
-- [x] Auth gate wired (App.jsx + all backend routes)
-- [x] Security middleware active
-- [x] Test suite green (185 tests)
-- [x] Supabase write-through + session restore
-- [x] SEC-009/SEC-011 — file size + MIME validation (already in main.py)
-
-## Phase 3 — Next
-- [ ] RAG pipeline + pgvector (backend)
-- [ ] Redis rate limiter (backend)
-- [ ] Parallel processing with Redis rate budget
-- [ ] Sign DPAs (compliance — pre-launch blocker)
-- [ ] Write privacy notice (compliance)
+## Phase 3 — Next (priority order)
+1. RAG for large docs (pgvector, chunk + embed compliance docs) — removes 32KB limit
+2. Parallel processing (ANSWER_CONCURRENCY=10 reliable) — 6-8x faster
+3. Redis rate limiter — for horizontal scaling
+4. Multi-user / team accounts — proper invite-based auth
+5. Session history — list past sessions, re-open them
+6. Answer templates — pre-load standard approved language
+7. Custom export formats — map into prospect's Excel template
+8. Bring-your-own-docs library — upload once, reuse across questionnaires
 
 ## Known Gaps
 | Gap | Status | Notes |
 |---|---|---|
-| Doc truncation | Mitigated (96k total, 40k/doc) | Full RAG Phase 2 |
-| In-memory rate limiter | Open | Phase 2: Redis |
-| No auth | Open | Phase 2: wire Auth.jsx + supabase.js into App.jsx |
+| Doc truncation | 32KB total / 16KB per doc | Full RAG Phase 3 |
+| In-memory rate limiter | Open | Phase 3: Redis |
+| No user-level auth | Open | Phase 3: invite-based multi-user |
 | No DPAs signed | Open | Pre-launch blocker |
 | Password-protected .docx | Open | Will raise error; graceful handling needed |
 | .docx text boxes / complex tables | Open | python-docx misses these; extraction gap |
-
-## Blockers
-- ~~Supabase migration SQL not yet run in dashboard~~ — done 2026-03-10
-- No auth = no multi-tenancy
-- No DPAs signed (pre-launch blocker)
-
-## Metrics (as of 2026-03-09)
-- Questions answered per session: TBD (no production data yet)
-- Avg AI certainty: TBD
-- Provider usage: 100% Groq (default)
-- SSE streaming: active on answer generation endpoint
-- Groq key pool: 5 keys, TPD-aware blacklisting active
-
-## Backlog
-See `agents/project-manager/backlog.md`
 
 ## Decisions
 See `agents/shared/decisions.md`

@@ -21,7 +21,7 @@ export default function Landing({ onStart }) {
         {/* Hero */}
         <div className="pt-20 pb-14 border-b border-subtle">
           <div className="inline-flex items-center gap-2 text-[11px] font-mono text-amber-400 bg-amber-400/10 border border-amber-400/25 px-3 py-1 rounded-full mb-8 tracking-wide">
-            v0.4.0 — Auth live · Supabase · Tests green
+            v1.0.0 — Live · Simple auth · Groq + Anthropic
           </div>
           <h1 className="text-5xl font-bold tracking-tight leading-[1.12] text-primary mb-5">
             AI drafts every answer<br />to security questionnaires.<br />
@@ -39,16 +39,16 @@ export default function Landing({ onStart }) {
             Get started →
           </button>
 
-          {/* v0.4.0 highlights */}
+          {/* v1.0.0 highlights */}
           <div className="mt-12 pt-8 border-t border-subtle">
-            <p className="text-[11px] font-mono text-muted uppercase tracking-widest mb-4">What shipped in v0.4.0</p>
+            <p className="text-[11px] font-mono text-muted uppercase tracking-widest mb-4">What shipped in v1.0.0</p>
             <div className="grid gap-2.5">
               {[
-                ['Auth live', 'Supabase Magic Link — sign in with your email, no password needed. Sessions scoped to your account.'],
-                ['Supabase persistence', 'Sessions survive server restarts. Your work is saved to the database and tied to your user.'],
-                ['Security middleware active', 'SecurityHeadersMiddleware and RateLimitMiddleware now running on every request — CSP, HSTS, X-Frame-Options, 30 req/min per IP.'],
-                ['Supabase migrations run', 'sessions, questions, answers, audit_events tables live. RLS policies enforcing per-user data isolation.'],
-                ['Test suite green', '185 tests passing across API, engine, LLM, parser, ingest, and audit modules.'],
+                ['Access-code protected', 'Simple access-code gate — no account required. Enter the code, get straight to work. Overridable per deployment.'],
+                ['Supabase persistence', 'Sessions, questions, answers, and audit events are written to Supabase. Your work survives server restarts.'],
+                ['Security middleware active', 'SecurityHeadersMiddleware and RateLimitMiddleware running on every request — CSP, HSTS, X-Frame-Options, 30 req/min per IP.'],
+                ['Two LLM providers configured', 'Groq (llama-3.3-70b-versatile, default) and Anthropic (claude-haiku-4-5) both configured and working in production.'],
+                ['Authenticated exports', 'Excel and PDF downloads use fetch+blob with auth headers — no broken download links.'],
               ].map(([title, detail]) => (
                 <div key={title} className="flex items-baseline gap-3 text-sm text-secondary">
                   <span className="text-success-text text-xs flex-shrink-0 mt-px">✓</span>
@@ -81,12 +81,12 @@ export default function Landing({ onStart }) {
                 body: 'Up to 32KB of text across all uploaded docs (16KB per doc). Covers most policy documents and shorter SOC 2 summaries well. Large SOC 2 reports (50-120KB) get truncated. Phase 2 adds RAG — the engine will retrieve only the sections relevant to each question.',
               },
               {
-                title: 'Sessions persist to Supabase — scoped to your account',
-                body: 'Sessions are written to Supabase on creation and restored automatically on server restart. Your work is tied to your account and survives beyond the current server process.',
+                title: 'Sessions persist to Supabase',
+                body: 'Sessions are written to Supabase on creation and restored automatically on server restart. Your work survives beyond the current server process.',
               },
               {
-                title: 'Three LLM providers — Groq is default',
-                body: 'Groq (llama-3.3-70b-versatile, free tier), Anthropic (claude-haiku-4-5), and Google (gemini-2.0-flash) are all supported. Switch with one LLM_PROVIDER env var. Anthropic produces the best structured JSON quality. Groq is fastest and free.',
+                title: 'Two LLM providers — Groq is default',
+                body: 'Groq (llama-3.3-70b-versatile, free tier) and Anthropic (claude-haiku-4-5) are both configured in production. Switch with one LLM_PROVIDER env var. Anthropic produces the best structured JSON quality. Groq is fastest and free.',
               },
             ].map(({ title, body }) => (
               <div key={title} className="flex gap-4">
@@ -113,15 +113,23 @@ export default function Landing({ onStart }) {
             {[
               {
                 title: 'RAG for large compliance docs',
-                body: 'Chunk your compliance documents, embed them with a small model, store vectors in Supabase pgvector. At query time, retrieve only the sections relevant to each question. No 32KB ceiling, better answer quality for large SOC 2 reports.',
+                body: 'Chunk your compliance documents, embed them with a small model, store vectors in Supabase pgvector. At query time, retrieve only the sections relevant to each question. Removes the 32KB ceiling — full SOC 2 reports, no truncation.',
               },
               {
                 title: 'True parallel processing with safety guarantees',
-                body: 'Revisiting concurrency with async LLM clients and a Redis-backed rate-limit budget tracker. The goal is ANSWER_CONCURRENCY=10 as the reliable default — 6-8× faster than today without the ordering anomalies that pushed sequential mode.',
+                body: 'Revisiting concurrency with async LLM clients and a Redis-backed rate-limit budget tracker. The goal is ANSWER_CONCURRENCY=10 as the reliable default — 6-8× faster than today without the ordering anomalies that pushed us to sequential.',
               },
               {
                 title: 'Redis rate limiter',
                 body: 'Replace the in-memory rate limiter with Redis. Required before horizontal scaling — the current limiter resets on each process restart and doesn\'t share state across workers.',
+              },
+              {
+                title: 'Session history',
+                body: 'List past sessions and re-open them from a dashboard. Right now every session starts fresh. Phase 3 adds a history view so you can pick up where you left off.',
+              },
+              {
+                title: 'Answer templates',
+                body: 'Pre-load standard approved language per control domain. Stop rewriting the same MFA policy answer every quarter — approve it once, pull it in on demand.',
               },
             ].map(({ title, body }) => (
               <div key={title} className="flex gap-4">
