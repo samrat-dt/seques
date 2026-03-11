@@ -11,7 +11,6 @@ export default function Processing({ sessionId, onDone }) {
   ])
   const [error, setError] = useState(null)
   const bottomRef = useRef(null)
-  const esRef = useRef(null)
 
   function appendLine(glyph, glyphColor, text) {
     setLogLines((prev) => [...prev, { time: now(), glyph, glyphColor, text }])
@@ -25,85 +24,56 @@ export default function Processing({ sessionId, onDone }) {
     })
   }
 
-  // Fetch total upfront so we can show "X of Y" immediately
+  // Poll /status until processing completes. EventSource (SSE) cannot send
+  // Authorization headers, so we use authenticated polling instead.
   useEffect(() => {
-    getStatus(sessionId).catch(() => {})
-  }, [sessionId])
-
-  useEffect(() => {
-    const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-    let answeredCount = 0
-    let totalCount = 0
+    let cancelled = false
     let questionsLogged = false
+    let lastProcessed = 0
 
-    const es = new EventSource(`${apiBase}/api/sessions/${sessionId}/stream`)
-    esRef.current = es
-
-    es.onmessage = async (event) => {
-      if (event.data === '[DONE]') {
-        es.close()
-        updateLastLine('✓', 'text-success-text', `Done. ${answeredCount} answer${answeredCount !== 1 ? 's' : ''} drafted.`)
-        try {
-          const data = await getAnswers(sessionId)
-          onDone(data)
-        } catch (err) {
-          setError(err.message)
-        }
-        return
-      }
+    async function poll() {
+      if (cancelled) return
       try {
-        JSON.parse(event.data)
-        answeredCount += 1
+        const s = await getStatus(sessionId)
 
-        if (!questionsLogged) {
-          // First answer arrived — docs must be parsed and questions extracted
-          updateLastLine('✓', 'text-success-text', 'Docs parsed')
-          appendLine('▶', 'text-amber-400', `Answering ${answeredCount}${totalCount > 0 ? ` of ${totalCount}` : ''}...`)
+        if (!questionsLogged && s.total > 0) {
+          updateLastLine('✓', 'text-success-text', `${s.total} question${s.total !== 1 ? 's' : ''} extracted`)
+          appendLine('▶', 'text-amber-400', `Answering 0 of ${s.total}...`)
           questionsLogged = true
-        } else {
+        }
+
+        if (questionsLogged && s.processed > lastProcessed) {
+          lastProcessed = s.processed
           setLogLines((prev) => {
             const next = [...prev]
-            const last = next[next.length - 1]
             next[next.length - 1] = {
-              ...last,
-              text: `Answering ${answeredCount}${totalCount > 0 ? ` of ${totalCount}` : ''}...`,
+              ...next[next.length - 1],
+              text: `Answering ${s.processed} of ${s.total}...`,
             }
             return next
           })
         }
-      } catch {
-        // malformed SSE message — ignore
-      }
-    }
 
-    es.onerror = () => {
-      es.close()
-      appendLine('✗', 'text-danger-text', 'Connection lost. Please refresh and try again.')
-      setError('Connection to server lost.')
-    }
-
-    // Poll status once to get the total question count for display
-    const statusPoll = setInterval(async () => {
-      try {
-        const s = await getStatus(sessionId)
-        if (s.total > 0) {
-          totalCount = s.total
-          if (!questionsLogged) {
-            updateLastLine('✓', 'text-success-text', `${s.total} question${s.total !== 1 ? 's' : ''} extracted`)
-            appendLine('▶', 'text-amber-400', `Answering 0 of ${s.total}...`)
-            questionsLogged = true
+        if (!s.processing && s.total > 0) {
+          if (!cancelled) {
+            updateLastLine('✓', 'text-success-text', `Done. ${s.processed} answer${s.processed !== 1 ? 's' : ''} drafted.`)
+            const data = await getAnswers(sessionId)
+            if (!cancelled) onDone(data)
           }
-          clearInterval(statusPoll)
+          return
         }
-      } catch {
-        clearInterval(statusPoll)
-      }
-    }, 800)
 
-    return () => {
-      es.close()
-      clearInterval(statusPoll)
+        if (!cancelled) setTimeout(poll, 1000)
+      } catch (err) {
+        if (!cancelled) {
+          appendLine('✗', 'text-danger-text', 'Connection lost. Please refresh and try again.')
+          setError(err.message)
+        }
+      }
     }
+
+    poll()
+    return () => { cancelled = true }
   }, [sessionId, onDone])
 
   useEffect(() => {

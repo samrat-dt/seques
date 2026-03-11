@@ -52,10 +52,15 @@ export default function App() {
       setAuthReady(true)
     })
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (session) {
         setUser(session.user)
         setAuthToken(session.access_token)
+        // After magic link click, take user straight to Upload instead of making
+        // them click "Get started" on Landing again.
+        if (event === 'SIGNED_IN') {
+          setScreen('upload')
+        }
       } else {
         setUser(null)
         setAuthToken(null)
