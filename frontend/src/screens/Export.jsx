@@ -1,4 +1,5 @@
-import { getExcelUrl, getPdfUrl } from '../api'
+import { useState } from 'react'
+import { getExcelUrl, getPdfUrl, getAuthToken } from '../api'
 
 const TableIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -27,12 +28,48 @@ const WarnIcon = () => (
   </svg>
 )
 
+// Download a protected file via fetch (sends Authorization header) then
+// triggers a browser save. Direct <a href> links cannot send auth headers.
+async function downloadWithAuth(url, filename) {
+  const token = getAuthToken()
+  const res = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  const blob = await res.blob()
+  const objectUrl = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = objectUrl
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(objectUrl)
+}
+
 export default function Export({ sessionId, questions, answers, onBack }) {
+  const [downloading, setDownloading] = useState(null)
+  const [dlError, setDlError] = useState(null)
+
   const total    = questions.length
   const approved = Object.values(answers).filter((a) => a.status === 'approved' || a.status === 'edited').length
   const flagged  = total - approved
   const gaps     = Object.values(answers).filter((a) => a.evidence_coverage === 'none').length
   const hasIssues = gaps > 0
+
+  async function handleDownload(format) {
+    setDownloading(format)
+    setDlError(null)
+    try {
+      const url = format === 'excel' ? getExcelUrl(sessionId) : getPdfUrl(sessionId)
+      const filename = format === 'excel'
+        ? 'security_questionnaire_response.xlsx'
+        : 'security_questionnaire_response.pdf'
+      await downloadWithAuth(url, filename)
+    } catch (err) {
+      setDlError(`Download failed — ${err.message}`)
+    } finally {
+      setDownloading(null)
+    }
+  }
 
   return (
     <div className="max-w-2xl mx-auto px-6 py-12">
@@ -88,24 +125,30 @@ export default function Export({ sessionId, questions, answers, onBack }) {
         </div>
       )}
 
+      {dlError && (
+        <div className="bg-danger-bg border border-danger-border/60 rounded-lg px-4 py-3 mb-3 text-xs text-danger-text">
+          {dlError}
+        </div>
+      )}
+
       {/* Download buttons */}
       <div className="flex flex-col gap-3 mt-8 max-w-xs mx-auto">
-        <a
-          href={getExcelUrl(sessionId)}
-          download
-          className="flex items-center justify-center gap-2 px-6 py-2.5 bg-accent text-base rounded-lg font-medium text-sm hover:bg-amber-300 shadow-btn-primary transition-all"
+        <button
+          onClick={() => handleDownload('excel')}
+          disabled={!!downloading}
+          className="flex items-center justify-center gap-2 px-6 py-2.5 bg-accent text-base rounded-lg font-medium text-sm hover:bg-amber-300 shadow-btn-primary transition-all disabled:opacity-60"
         >
           <TableIcon />
-          Download Excel
-        </a>
-        <a
-          href={getPdfUrl(sessionId)}
-          download
-          className="flex items-center justify-center gap-2 px-6 py-2.5 bg-surface border border-mid text-primary rounded-lg font-medium text-sm hover:bg-raised hover:border-strong transition-all"
+          {downloading === 'excel' ? 'Downloading...' : 'Download Excel'}
+        </button>
+        <button
+          onClick={() => handleDownload('pdf')}
+          disabled={!!downloading}
+          className="flex items-center justify-center gap-2 px-6 py-2.5 bg-surface border border-mid text-primary rounded-lg font-medium text-sm hover:bg-raised hover:border-strong transition-all disabled:opacity-60"
         >
           <FileTextIcon />
-          Download PDF
-        </a>
+          {downloading === 'pdf' ? 'Downloading...' : 'Download PDF'}
+        </button>
         <button
           onClick={onBack}
           className="px-6 py-2.5 text-muted hover:text-secondary text-sm font-medium transition-colors"

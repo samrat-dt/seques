@@ -6,6 +6,10 @@ export function setAuthToken(token) {
   _authToken = token
 }
 
+export function getAuthToken() {
+  return _authToken
+}
+
 async function request(path, options = {}) {
   const headers = { ...options.headers }
   if (_authToken) headers['Authorization'] = `Bearer ${_authToken}`
