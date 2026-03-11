@@ -6,6 +6,7 @@ import Export from './screens/Export'
 import Landing from './screens/Landing'
 import Auth from './screens/Auth'
 import { getStatus, getAnswers } from './api'
+import { Analytics } from '@vercel/analytics/react'
 
 const STEPS = ['upload', 'processing', 'review', 'export']
 const STEP_LABELS = ['Upload', 'Processing', 'Review', 'Export']
@@ -86,8 +87,8 @@ export default function App() {
     handleReset()
   }
 
-  if (screen === 'landing') return <Landing onStart={() => setScreen('upload')} />
-  if (!authed) return <Auth onUnlock={() => setAuthed(true)} />
+  if (screen === 'landing') return <><Landing onStart={() => setScreen('upload')} /><Analytics /></>
+  if (!authed) return <><Auth onUnlock={() => setAuthed(true)} /><Analytics /></>
 
   return (
     <div className="min-h-screen bg-base">
@@ -121,6 +122,7 @@ export default function App() {
         <Export sessionId={sessionId} questions={questions} answers={answers}
           onBack={() => setScreen('review')} />
       )}
+      <Analytics />
     </div>
   )
 }
