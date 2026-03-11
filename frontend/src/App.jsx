@@ -1,12 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import Upload from './screens/Upload'
 import Processing from './screens/Processing'
 import Review from './screens/Review'
 import Export from './screens/Export'
 import Landing from './screens/Landing'
 import Auth from './screens/Auth'
-import { getStatus, getAnswers, setAuthToken } from './api'
-import { supabase } from './supabase'
+import { getStatus, getAnswers } from './api'
 import { Analytics } from '@vercel/analytics/react'
 
 const STEPS = ['upload', 'processing', 'review', 'export']
@@ -33,46 +32,14 @@ function StepIndicator({ current }) {
 }
 
 export default function App() {
-  const [authReady, setAuthReady] = useState(!supabase) // true immediately if no supabase
-  const [user, setUser] = useState(null)
+  const [authed, setAuthed] = useState(() => localStorage.getItem('seques_auth') === '1')
   const [screen, setScreen] = useState('landing')
   const [sessionId, setSessionId] = useState(null)
   const [questions, setQuestions] = useState([])
   const [answers, setAnswers] = useState({})
 
-  // Auth gate — only when Supabase is configured
-  useEffect(() => {
-    if (!supabase) return
-
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) {
-        setUser(session.user)
-        setAuthToken(session.access_token)
-      }
-      setAuthReady(true)
-    })
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (session) {
-        setUser(session.user)
-        setAuthToken(session.access_token)
-        // After magic link click, take user straight to Upload instead of making
-        // them click "Get started" on Landing again.
-        if (event === 'SIGNED_IN') {
-          setScreen('upload')
-        }
-      } else {
-        setUser(null)
-        setAuthToken(null)
-      }
-    })
-
-    return () => subscription.unsubscribe()
-  }, [])
-
-  // Restore session from URL on mount (after auth ready)
-  useEffect(() => {
-    if (!authReady) return
+  // Restore session from URL on mount
+  useState(() => {
     const params = new URLSearchParams(window.location.search)
     const sid = params.get('s')
     if (!sid) return
@@ -88,7 +55,7 @@ export default function App() {
         }
       })
       .catch(() => window.history.replaceState({}, '', window.location.pathname))
-  }, [authReady])
+  })
 
   function handleProcessStart(sid) {
     setSessionId(sid)
@@ -114,14 +81,14 @@ export default function App() {
     window.history.replaceState({}, '', window.location.pathname)
   }
 
-  async function handleSignOut() {
-    if (supabase) await supabase.auth.signOut()
+  function handleSignOut() {
+    localStorage.removeItem('seques_auth')
+    setAuthed(false)
     handleReset()
   }
 
-  if (!authReady) return null
-  if (screen === 'landing') return <Landing onStart={() => setScreen('upload')} />
-  if (supabase && !user) return <Auth />
+  if (screen === 'landing') return <><Landing onStart={() => setScreen('upload')} /><Analytics /></>
+  if (!authed) return <><Auth onUnlock={() => setAuthed(true)} /><Analytics /></>
 
   return (
     <div className="min-h-screen bg-base">
@@ -138,11 +105,9 @@ export default function App() {
                 + New
               </button>
             )}
-            {supabase && user && (
-              <button onClick={handleSignOut} className="text-xs text-muted hover:text-primary transition-colors px-3 py-1.5 rounded-lg hover:bg-raised">
-                Sign out
-              </button>
-            )}
+            <button onClick={handleSignOut} className="text-xs text-muted hover:text-primary transition-colors px-3 py-1.5 rounded-lg hover:bg-raised">
+              Sign out
+            </button>
           </div>
         </div>
       </nav>

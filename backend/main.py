@@ -206,7 +206,9 @@ def _restore_session(session_id: str) -> "Session | None":
 # ---------------------------------------------------------------------------
 
 _SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
-_AUTH_ENABLED = bool(_SUPABASE_JWT_SECRET)
+# Auth disabled — using simple frontend access-code gate instead of Supabase JWT.
+# Re-enable by setting AUTH_ENABLED=true + SUPABASE_JWT_SECRET in env.
+_AUTH_ENABLED = os.getenv("AUTH_ENABLED", "false").lower() == "true" and bool(_SUPABASE_JWT_SECRET)
 
 # Per-user guardrails (configurable via env)
 MAX_SESSIONS_PER_USER = int(os.getenv("MAX_SESSIONS_PER_USER", "3"))
